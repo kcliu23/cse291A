@@ -1,0 +1,21 @@
+{
+  "_comment": "Prefix-reuse study: does keeping an agent on the same slot matter? 'auto' lets llama-server choose the slot; 'pin' keeps each task on one slot. Compare cache_hit_ratio, prefill time and latency. Run a second copy with \"cache_prompt\": false and out_root runs/cache_off for the no-reuse baseline.",
+  "out_root": "runs/cache",
+  "workload_config": "configs/workload_mix.json",
+  "n_tasks": 40,
+  "cache_prompt": true,
+  "server": {
+    "binary": "~/llama.cpp/build/bin/llama-server",
+    "model": "~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    "ngl": 99, "port": 8080, "extra": []
+  },
+  "server_grid": [{"ctx": 16384, "parallel": 4}],
+  "policies": ["fifo"],
+  "slot_policies": ["auto", "pin"],
+  "k": [4, 8],
+  "rates": [0.2],
+  "seeds": [0, 1, 2],
+  "task_timeout_s": 600,
+  "request_timeout_s": 300,
+  "warmup": 2
+}
