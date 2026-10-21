@@ -24,6 +24,31 @@ pip install -r requirements.txt
 
 On the instance, llama.cpp and the model come from the setup guide (pinned commit, `sha256sum` of the GGUF). Paths in `configs/sweep_*.json` assume `~/llama.cpp/build/bin/llama-server` and `~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf`.
 
+## Running on an Apple Silicon Mac
+
+Phase 1 can run entirely on a Mac; the configs work unchanged once llama.cpp and the model are at the default paths.
+
+```bash
+# llama.cpp, pinned (Metal is on by default on macOS)
+git clone https://github.com/ggml-org/llama.cpp ~/llama.cpp && cd ~/llama.cpp
+git checkout <TAG> && cmake -B build && cmake --build build --config Release -j
+git rev-parse HEAD   # record in the report
+
+# model
+python3 -m venv ~/venvs/agentserve && source ~/venvs/agentserve/bin/activate
+pip install -r requirements.txt "huggingface_hub[cli]"
+mkdir -p ~/models && hf download bartowski/Llama-3.2-3B-Instruct-GGUF \
+  Llama-3.2-3B-Instruct-Q4_K_M.gguf --local-dir ~/models
+shasum -a 256 ~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+```
+
+Memory on a Mac is unified, so `nvidia-smi` doesn't exist and RSS misses Metal buffers. The pipeline records instead:
+
+- **Allocated budget** from `server.log`: `model_buffer_mib`, `kv_buffer_mib`, `compute_buffer_mib`. The KV cache is allocated once from `-c`, so this is the memory budget you are varying.
+- **Physical footprint** (`footprint_mb`, sampled every ~2 s via macOS `footprint`), which includes Metal buffers. Best effort: blank if the tool's output format differs.
+
+For clean numbers: plug in, close other apps, run `caffeinate -i` alongside sweeps, and note the chip, RAM and macOS version in the report.
+
 ## Run order
 
 ```bash

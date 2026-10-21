@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
+import re
 import shutil
 import time
 
@@ -42,6 +44,26 @@ async def _gpu_mem_mb() -> float | None:
         return None
 
 
+_FOOTPRINT_RE = re.compile(r"(?:phys_footprint|Footprint):\s*([\d.]+)\s*([KMG])B", re.I)
+
+
+async def _footprint_mb(pid: int) -> float | None:
+    """macOS only: physical footprint, which includes Metal (unified-memory) buffers that RSS misses.
+    Best effort: returns None if `footprint` is missing or its output format differs."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "footprint", "-p", str(pid),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
+    except (OSError, TimeoutError):
+        return None
+    m = _FOOTPRINT_RE.search(out.decode(errors="replace"))
+    if not m:
+        return None
+    return float(m.group(1)) * {"K": 1 / 1024, "M": 1, "G": 1024}[m.group(2).upper()]
+
+
 def _rss_mb(proc: psutil.Process | None) -> float | None:
     if proc is None:
         return None
@@ -63,6 +85,9 @@ class Monitor:
         self.interval_s = interval_s
         self.proc = psutil.Process(server_pid) if server_pid else None
         self.has_gpu = shutil.which("nvidia-smi") is not None
+        self.has_footprint = (platform.system() == "Darwin" and server_pid is not None
+                              and shutil.which("footprint") is not None)
+        self.n = 0
         self.slots_ok = True
         self.metrics_ok = True
 
@@ -83,6 +108,9 @@ class Monitor:
         rec: dict = {"t": time.monotonic() - self.t0, "rss_mb": _rss_mb(self.proc)}
         if self.has_gpu:
             rec["gpu_mem_mb"] = await _gpu_mem_mb()
+        if self.has_footprint and self.n % 4 == 0:  # footprint is slow; sample every 4th tick
+            rec["footprint_mb"] = await _footprint_mb(self.proc.pid)
+        self.n += 1
         if self.metrics_ok:
             try:
                 async with s.get(f"{self.base_url}/metrics") as r:

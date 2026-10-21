@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 import matplotlib
@@ -52,6 +53,26 @@ def _err_kind(err: str | None) -> str:
     return err.split(":")[0]
 
 
+_BUF_RE = re.compile(r"\b(KV|model|compute)\s+buffer size\s*=\s*([\d.]+)\s*MiB", re.I)
+
+
+def parse_server_buffers(log: Path) -> dict[str, float]:
+    """Sum llama.cpp's startup allocations by kind (MiB) from server.log.
+
+    llama.cpp allocates the KV cache once at startup from -c, so these numbers
+    are the server's memory budget; they do not change during a run.
+    Line formats differ across builds (e.g. 'Metal KV buffer size = 1792.00 MiB',
+    'CUDA0 model buffer size = ...'); unmatched lines are ignored.
+    """
+    out: dict[str, float] = {}
+    if not log.exists():
+        return out
+    for m in _BUF_RE.finditer(log.read_text(errors="replace")):
+        key = f"{m.group(1).lower()}_buffer_mib"
+        out[key] = out.get(key, 0.0) + float(m.group(2))
+    return out
+
+
 def summarize_run(d: Path) -> dict:
     cfg = json.loads((d / "run_config.json").read_text()) if (d / "run_config.json").exists() else {}
     srv = cfg.get("server_config", {})
@@ -61,6 +82,7 @@ def summarize_run(d: Path) -> dict:
         "policy": cfg.get("policy"), "slot_policy": cfg.get("slot_policy"),
         "k": cfg.get("k"), "rate": cfg.get("rate"), "seed": cfg.get("workload_seed"),
         "server_startup_s": cfg.get("server_startup_s"),
+        **parse_server_buffers(d / "server.log"),
     }
     tasks = pd.DataFrame(_jsonl(d / "tasks.jsonl"))
     reqs = pd.DataFrame(_jsonl(d / "requests.jsonl"))
@@ -119,6 +141,7 @@ def summarize_run(d: Path) -> dict:
     if sysd:
         s = pd.json_normalize(sysd)
         for col, name in [("rss_mb", "peak_rss_mb"), ("gpu_mem_mb", "peak_gpu_mem_mb"),
+                          ("footprint_mb", "peak_footprint_mb"),
                           ("metrics.llamacpp:kv_cache_usage_ratio", "peak_kv_usage"),
                           ("metrics.llamacpp:requests_deferred", "peak_deferred")]:
             if col in s:
@@ -209,8 +232,9 @@ def plot_server_grid(summary: pd.DataFrame, out: Path) -> list[Path]:
         panels = [("lat_p95", "p95 task completion latency", "seconds"),
                   ("throughput_tasks_s", "Completed tasks per second", "tasks/s"),
                   ("fail_rate", "Failed or timed-out tasks", "fraction of tasks"),
-                  ("peak_gpu_mem_mb" if "peak_gpu_mem_mb_mean" in g else "peak_rss_mb",
-                   "Peak memory", "MB")]
+                  (next((m for m in ("peak_gpu_mem_mb", "peak_footprint_mb", "kv_buffer_mib")
+                         if f"{m}_mean" in g and g[f"{m}_mean"].notna().any()), "peak_rss_mb"),
+                   "Peak / allocated memory", "MB")]
         fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
         ctxs = sorted(g.ctx.unique())
         for ax, (m, title, yl) in zip(axes.flat, panels):
@@ -249,6 +273,7 @@ def plot_timeline(run: Path, out: Path) -> Path | None:
               ("metrics.llamacpp:requests_deferred", "Requests waiting for a slot"),
               ("metrics.llamacpp:kv_cache_usage_ratio", "KV cache usage ratio"),
               ("gpu_mem_mb", "GPU memory used (MB)"),
+              ("footprint_mb", "Server physical footprint, incl. Metal buffers (MB)"),
               ("rss_mb", "Server RSS (MB)")]
     series = [(c, t) for c, t in series if c in s and pd.to_numeric(s[c], errors="coerce").notna().any()]
     fig, axes = plt.subplots(len(series), 1, figsize=(9, 1.9 * len(series)), sharex=True)
