@@ -71,7 +71,8 @@ def execute(cfg: dict, r: dict, log_f) -> None:
     except Exception as e:  # record and continue
         status, err = "crashed", "".join(traceback.format_exception_only(e)).strip()
         died = srv.exit_code_before_stop
-        note = ("server was still running" if died is None
+        note = ("server was never started" if srv.proc is None
+                else "server was still running" if died is None
                 else f"server had already exited with code {died}"
                      + (" (killed by a signal)" if died < 0 else ""))
         (d / "CRASHED").write_text(traceback.format_exc() + f"\n[sweep] {note}\n")

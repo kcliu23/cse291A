@@ -14,6 +14,8 @@ Server config keys:
 """
 from __future__ import annotations
 
+import json
+import socket
 import subprocess
 import sys
 import time
@@ -38,6 +40,32 @@ def build_cmd(cfg: dict) -> list[str]:
             # 5+ logs per-token debug output and a dry-run pass with 0.00 MiB sizes.
             "-lv", str(cfg.get("log_verbosity", 4)),
             *map(str, cfg.get("extra", []))]
+
+
+def port_in_use(port: int, host: str = "127.0.0.1") -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1)
+        return s.connect_ex((host, port)) == 0
+
+
+def verify_own_server(url: str, proc: subprocess.Popen, cfg: dict) -> None:
+    """Fail unless the server answering at `url` is the process we just started, with our slots.
+
+    Guards against a stray server already listening on the port: ours would fail to bind and
+    exit, while the stray one answers /health, so every request would silently go to it.
+    """
+    if proc.poll() is not None:
+        raise RuntimeError(f"server exited with code {proc.returncode} during startup "
+                           "(see server.log; e.g. port already in use)")
+    try:
+        with urllib.request.urlopen(url + "/props", timeout=5) as r:
+            props = json.loads(r.read())
+    except (urllib.error.URLError, ConnectionError, TimeoutError, ValueError) as e:
+        raise RuntimeError(f"could not read {url}/props to verify the server: {e!r}") from e
+    slots = props.get("total_slots")
+    if slots is not None and int(slots) != int(cfg["parallel"]):
+        raise RuntimeError(f"server at {url} reports {slots} slots but this run started one with "
+                           f"-np {cfg['parallel']}: another server is answering on this port")
 
 
 def wait_healthy(url: str, proc: subprocess.Popen, timeout_s: float) -> None:
@@ -65,6 +93,10 @@ class Server:
         self.exit_code_before_stop: int | None = None  # set if the server had already exited on its own
 
     def __enter__(self) -> "Server":
+        port = int(self.cfg.get("port", 8080))
+        if port_in_use(port):
+            raise RuntimeError(f"port {port} is already in use, probably by a leftover llama-server. "
+                               f"Find it with `lsof -i :{port}` and stop it, then rerun the sweep.")
         cmd = build_cmd(self.cfg)
         self.log = open(self.log_path, "w")
         self.log.write("# " + " ".join(cmd) + "\n")
@@ -77,6 +109,7 @@ class Server:
                                      stdin=subprocess.DEVNULL, start_new_session=True)
         try:
             wait_healthy(self.url, self.proc, self.cfg.get("startup_timeout_s", 600))
+            verify_own_server(self.url, self.proc, self.cfg)
         except Exception:
             self.__exit__(None, None, None)
             raise
