@@ -22,7 +22,7 @@ Baseline for memory-aware agent serving on `llama-server`: a FIFO scheduler with
 pip install -r requirements.txt
 ```
 
-On the instance, llama.cpp and the model come from the setup guide (pinned commit, `sha256sum` of the GGUF). Paths in `configs/sweep_*.json` assume `~/llama.cpp/build/bin/llama-server` and `~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf`.
+On the instance, llama.cpp and the model come from the setup guide (pinned commit, `sha256sum` of the GGUF). Paths in `configs/sweep_*.json` assume `~/Desktop/UCSD/FALL2026/cse291/llama.cpp/build/bin/llama-server` and `~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf`.
 
 ## Running on an Apple Silicon Mac
 
@@ -30,7 +30,7 @@ Phase 1 can run entirely on a Mac; the configs work unchanged once llama.cpp and
 
 ```bash
 # llama.cpp, pinned (Metal is on by default on macOS)
-git clone https://github.com/ggml-org/llama.cpp ~/llama.cpp && cd ~/llama.cpp
+git clone https://github.com/ggml-org/llama.cpp ~/Desktop/UCSD/FALL2026/cse291/llama.cpp && cd ~/Desktop/UCSD/FALL2026/cse291/llama.cpp
 git checkout <TAG> && cmake -B build && cmake --build build --config Release -j
 git rev-parse HEAD   # record in the report
 
