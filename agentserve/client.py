@@ -13,13 +13,14 @@ import aiohttp
 
 
 class CompletionError(Exception):
-    def __init__(self, kind: str, message: str):
+    def __init__(self, kind: str, message: str, before_response: bool = False):
         super().__init__(f"{kind}: {message}")
         self.kind = kind          # "http_4xx", "http_5xx", "server_error", "connection", "timeout"
         self.message = message
+        self.before_response = before_response  # True if the connection failed before any reply arrived
 
 
-async def complete(
+async def _complete_once(
     session: aiohttp.ClientSession,
     base_url: str,
     prompt: str,
@@ -47,6 +48,7 @@ async def complete(
         payload["id_slot"] = id_slot
 
     t_send = time.monotonic()
+    got_response = False
     t_first = None
     n_chunks = 0
     parts: list[str] = []
@@ -57,6 +59,7 @@ async def complete(
             json=payload,
             timeout=aiohttp.ClientTimeout(total=timeout_s),
         ) as resp:
+            got_response = True
             if resp.status != 200:
                 body = await resp.text()
                 kind = "http_4xx" if 400 <= resp.status < 500 else "http_5xx"
@@ -83,7 +86,7 @@ async def complete(
     except TimeoutError as e:  # aiohttp raises asyncio.TimeoutError (alias of TimeoutError)
         raise CompletionError("timeout", str(e) or "request timed out") from e
     except aiohttp.ClientError as e:
-        raise CompletionError("connection", repr(e)) from e
+        raise CompletionError("connection", repr(e), before_response=not got_response) from e
 
     t_end = time.monotonic()
     timings = final.get("timings", {}) or {}
@@ -95,9 +98,29 @@ async def complete(
         "n_chunks": n_chunks,
         "tokens_predicted": final.get("tokens_predicted", timings.get("predicted_n")),
         "tokens_evaluated": final.get("tokens_evaluated"),
-        "tokens_cached": final.get("tokens_cached", timings.get("cache_n")),
+        # timings.cache_n = prompt tokens reused from the slot's cache. final["tokens_cached"]
+        # counts everything in the slot (incl. the previous answer), so it is only a fallback.
+        "tokens_cached": timings.get("cache_n", final.get("tokens_cached")),
         "id_slot": final.get("id_slot"),
         "stop_type": final.get("stop_type"),
         "truncated": final.get("truncated"),
         "timings": timings,
     }
+
+
+async def complete(session: aiohttp.ClientSession, base_url: str, prompt: str, n_predict: int,
+                   *, max_retries: int = 1, **kw) -> dict:
+    """complete() with a retry for connections that drop before any reply arrives.
+
+    Such a failure means the request never reached the model, so resending it is safe and
+    does not change what is measured. The record's "retries" field shows when it happened;
+    t_send is the send time of the attempt that succeeded.
+    """
+    for attempt in range(max_retries + 1):
+        try:
+            r = await _complete_once(session, base_url, prompt, n_predict, **kw)
+            r["retries"] = attempt
+            return r
+        except CompletionError as e:
+            if e.kind != "connection" or not e.before_response or attempt == max_retries:
+                raise

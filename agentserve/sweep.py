@@ -53,10 +53,12 @@ def execute(cfg: dict, r: dict, log_f) -> None:
     wl = generate(wl_cfg, r["seed"], r["rate"], cfg["n_tasks"])
     wl_path = d / "workload.json"
     wl_path.write_text(json.dumps(wl))
+    time.sleep(cfg.get("cooldown_s", 3))  # let the previous server release the port and GPU memory
     t = time.time()
     status, err = "ok", None
+    srv = Server(r["server"], d / "server.log")
     try:
-        with Server(r["server"], d / "server.log") as srv:
+        with srv:
             asyncio.run(run_once(
                 server=srv.url, workload_path=str(wl_path), out=str(d), policy=r["policy"], k=r["k"],
                 task_timeout_s=cfg.get("task_timeout_s", 300),
@@ -68,9 +70,14 @@ def execute(cfg: dict, r: dict, log_f) -> None:
                             "rate": r["rate"], "workload_seed": r["seed"]}))
     except Exception as e:  # record and continue
         status, err = "crashed", "".join(traceback.format_exception_only(e)).strip()
-        (d / "CRASHED").write_text(traceback.format_exc())
-        print(f"[sweep] CRASHED {d}: {err}")
+        died = srv.exit_code_before_stop
+        note = ("server was still running" if died is None
+                else f"server had already exited with code {died}"
+                     + (" (killed by a signal)" if died < 0 else ""))
+        (d / "CRASHED").write_text(traceback.format_exc() + f"\n[sweep] {note}\n")
+        print(f"[sweep] CRASHED {d}: {err} [{note}]")
     log_f.write(json.dumps({"dir": str(d), "status": status, "error": err,
+                            "server_exit_code_before_stop": srv.exit_code_before_stop,
                             "start_unix": t, "elapsed_s": round(time.time() - t, 2)}) + "\n")
     log_f.flush()
 

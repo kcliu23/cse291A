@@ -1,8 +1,8 @@
 {
-  "_comment": "Prefix-reuse study: does keeping an agent on the same slot matter? 'auto' lets llama-server choose the slot; 'pin' keeps each task on one slot. Compare cache_hit_ratio, prefill time and latency. The no-reuse baseline is configs/sweep_cache_off.json.",
+  "_comment": "Retained-context study at K=8 with 4 slots, so agents lose their slot during tool waits. Varies llama.cpp's host-RAM prompt cache (--cache-ram, MiB): 0 = off, 1024, 8192 = default; and slot choice 'auto' (server picks) vs 'pin' (each task keeps one slot). Compare cache_hit_ratio, prefill_ms_p50, latency and peak_footprint_mb. The no-reuse baseline is configs/sweep_cache_off.json.",
   "out_root": "runs/cache",
   "workload_config": "configs/workload_mix.json",
-  "n_tasks": 40,
+  "n_tasks": 30,
   "cache_prompt": true,
   "server": {
     "binary": "~/Desktop/UCSD/FALL2026/cse291/llama.cpp/build/bin/llama-server",
@@ -14,7 +14,30 @@
   "server_grid": [
     {
       "ctx": 16384,
-      "parallel": 4
+      "parallel": 4,
+      "tag": "cram0",
+      "extra": [
+        "--cache-ram",
+        "0"
+      ]
+    },
+    {
+      "ctx": 16384,
+      "parallel": 4,
+      "tag": "cram1024",
+      "extra": [
+        "--cache-ram",
+        "1024"
+      ]
+    },
+    {
+      "ctx": 16384,
+      "parallel": 4,
+      "tag": "cram8192",
+      "extra": [
+        "--cache-ram",
+        "8192"
+      ]
     }
   ],
   "policies": [
@@ -25,11 +48,10 @@
     "pin"
   ],
   "k": [
-    4,
     8
   ],
   "rates": [
-    0.2
+    0.1
   ],
   "seeds": [
     0,

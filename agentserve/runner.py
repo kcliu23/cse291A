@@ -173,7 +173,10 @@ class Runner:
                            cache_prompt=False, timeout_s=120)
 
     async def run(self, warmup: int, server_pid: int | None, monitor_interval_s: float) -> None:
-        connector = aiohttp.TCPConnector(limit=0)
+        # force_close: one fresh connection per request. llama-server closes a connection right
+        # after a streamed reply; reusing it (keep-alive) races with that close and fails with
+        # "Server disconnected" on back-to-back requests.
+        connector = aiohttp.TCPConnector(limit=0, force_close=True)
         async with aiohttp.ClientSession(connector=connector, read_bufsize=2**22) as s:
             if warmup:
                 await self.warmup(s, warmup)

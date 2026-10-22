@@ -93,7 +93,8 @@ class Monitor:
 
     async def run(self, stop: asyncio.Event) -> None:
         timeout = aiohttp.ClientTimeout(total=2)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
+        connector = aiohttp.TCPConnector(force_close=True)  # see runner.py: avoid keep-alive races
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector) as s:
             with open(self.out_path, "w") as f:
                 while not stop.is_set():
                     sample = await self._sample(s)

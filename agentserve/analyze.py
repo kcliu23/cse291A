@@ -115,6 +115,8 @@ def summarize_run(d: Path) -> dict:
     if not reqs.empty:
         r_ok = reqs[reqs.status == "ok"]
         row["n_requests"] = len(reqs)
+        if "retries" in reqs:
+            row["n_retries"] = int(pd.to_numeric(reqs.retries, errors="coerce").fillna(0).sum())
         row["gen_tokens"] = float(r_ok.tokens_predicted.sum())
         row["gen_tokens_s"] = row["gen_tokens"] / makespan if makespan > 0 else np.nan
         row["ttft_p50"] = _pct(r_ok.t_first - r_ok.t_send, 50)
@@ -320,7 +322,7 @@ def main() -> None:
         p = plot_timeline(Path(top.run), out)
         if p:
             print("  plot", p)
-    cols = ["ctx", "parallel", "variant", "k", "rate", "n_seeds", "n_ok_mean", "fail_rate_mean", "lat_p95_mean",
+    cols = ["ctx", "parallel", "variant", "slot_policy", "k", "rate", "n_seeds", "n_ok_mean", "fail_rate_mean", "lat_p95_mean",
             "lat_p95_std", "throughput_tasks_s_mean", "idle_hold_frac_mean", "cache_hit_ratio_mean"]
     print(summ[[c for c in cols if c in summ]].round(3).to_string(index=False))
 

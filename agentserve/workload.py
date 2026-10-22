@@ -10,7 +10,7 @@ Text is filler words drawn from a small vocabulary of common English words, so
 actual token counts; analysis uses those, not these estimates.
 
 Usage:
-    python -m agentserve.workload --config configs/workload_dev.json \
+    python -m agentserve.workload --config configs/workload_mix.json \
         --seed 0 --rate 0.5 --n-tasks 60 --out workloads/dev_s0_r0.5.json
 """
 from __future__ import annotations

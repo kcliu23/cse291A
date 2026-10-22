@@ -8,6 +8,7 @@ Server config keys:
     ngl      layers offloaded to GPU (-ngl), default 99
     port     default 8080
     extra    list of extra CLI args
+    log_verbosity llama.cpp -lv level, default 4 (needed for buffer sizes in server.log)
     mock     true to launch tools/mock_server.py instead (pipeline testing only)
     mock_args  extra args for the mock server
 """
@@ -33,6 +34,9 @@ def build_cmd(cfg: dict) -> list[str]:
             "-c", str(cfg["ctx"]), "-np", str(cfg["parallel"]),
             "-ngl", str(cfg.get("ngl", 99)),
             "--host", "127.0.0.1", "--port", port, "--metrics",
+            # -lv 4 logs the model/KV/compute buffer sizes that analyze.py parses;
+            # 5+ logs per-token debug output and a dry-run pass with 0.00 MiB sizes.
+            "-lv", str(cfg.get("log_verbosity", 4)),
             *map(str, cfg.get("extra", []))]
 
 
@@ -58,6 +62,7 @@ class Server:
         self.url = f"http://127.0.0.1:{cfg.get('port', 8080)}"
         self.proc: subprocess.Popen | None = None
         self.startup_s: float | None = None
+        self.exit_code_before_stop: int | None = None  # set if the server had already exited on its own
 
     def __enter__(self) -> "Server":
         cmd = build_cmd(self.cfg)
@@ -65,7 +70,11 @@ class Server:
         self.log.write("# " + " ".join(cmd) + "\n")
         self.log.flush()
         t = time.monotonic()
-        self.proc = subprocess.Popen(cmd, stdout=self.log, stderr=subprocess.STDOUT)
+        # start_new_session: the server gets its own process group, so a Ctrl-C or hang-up
+        # aimed at the terminal reaches only this Python process, which then stops the
+        # server cleanly in __exit__.
+        self.proc = subprocess.Popen(cmd, stdout=self.log, stderr=subprocess.STDOUT,
+                                     stdin=subprocess.DEVNULL, start_new_session=True)
         try:
             wait_healthy(self.url, self.proc, self.cfg.get("startup_timeout_s", 600))
         except Exception:
@@ -75,6 +84,10 @@ class Server:
         return self
 
     def __exit__(self, *exc) -> None:
+        if self.proc is not None:
+            # None = still running (normal). A number means it died before we stopped it:
+            # negative = killed by that signal (-15 SIGTERM, -2 SIGINT, -9 SIGKILL).
+            self.exit_code_before_stop = self.proc.poll()
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:
