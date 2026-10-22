@@ -22,7 +22,7 @@ Baseline for memory-aware agent serving on `llama-server`: a FIFO scheduler with
 pip install -r requirements.txt
 ```
 
-On the instance, llama.cpp and the model come from the setup guide (pinned commit, `sha256sum` of the GGUF). Paths in `configs/sweep_*.json` assume `~/Desktop/UCSD/FALL2026/cse291/llama.cpp/build/bin/llama-server` and `~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf`.
+On the instance, llama.cpp and the model come from the setup guide (pinned commit, `sha256sum` of the GGUF). Paths in `configs/sweep_*.json` assume `~/Desktop/UCSD/FALL2026/cse291/llama.cpp/build/bin/llama-server` and `~/Desktop/UCSD/FALL2026/cse291/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf`.
 
 ## Running on an Apple Silicon Mac
 
@@ -35,11 +35,11 @@ git checkout <TAG> && cmake -B build && cmake --build build --config Release -j
 git rev-parse HEAD   # record in the report
 
 # model
-python3 -m venv ~/venvs/agentserve && source ~/venvs/agentserve/bin/activate
+python3 -m venv ~/Desktop/UCSD/FALL2026/cse291/.venv && source ~/Desktop/UCSD/FALL2026/cse291/.venv/bin/activate
 pip install -r requirements.txt "huggingface_hub[cli]"
-mkdir -p ~/models && hf download bartowski/Llama-3.2-3B-Instruct-GGUF \
-  Llama-3.2-3B-Instruct-Q4_K_M.gguf --local-dir ~/models
-shasum -a 256 ~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf
+mkdir -p ~/Desktop/UCSD/FALL2026/cse291/models && hf download bartowski/Llama-3.2-3B-Instruct-GGUF \
+  Llama-3.2-3B-Instruct-Q4_K_M.gguf --local-dir ~/Desktop/UCSD/FALL2026/cse291/models
+shasum -a 256 ~/Desktop/UCSD/FALL2026/cse291/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf
 ```
 
 Memory on a Mac is unified, so `nvidia-smi` doesn't exist and RSS misses Metal buffers. The pipeline records instead:
