@@ -67,7 +67,10 @@ python -m agentserve.analyze runs/ksweep
 # 3. Memory budget (-c x -np) and prefix reuse
 python -m agentserve.sweep configs/sweep_slots.json && python -m agentserve.analyze runs/slots
 python -m agentserve.sweep configs/sweep_cache.json && python -m agentserve.analyze runs/cache
+python -m agentserve.sweep configs/sweep_cache_off.json && python -m agentserve.analyze runs/cache_off
 ```
+
+A `server_grid` entry may carry a `"tag"` and its own `"extra"` flags (e.g. `"tag": "kvq8", "extra": ["-fa", "on", "-ctk", "q8_0", "-ctv", "q8_0"]`); tagged configs get their own run folders and appear as a separate `variant` in the analysis.
 
 Run sweeps inside `tmux`. Re-running a sweep skips finished runs, so stopping at the daily cap and resuming tomorrow is safe.
 

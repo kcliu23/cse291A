@@ -78,7 +78,7 @@ def summarize_run(d: Path) -> dict:
     srv = cfg.get("server_config", {})
     row = {
         "run": str(d), "status": "done" if (d / "DONE").exists() else "crashed",
-        "ctx": srv.get("ctx"), "parallel": srv.get("parallel"),
+        "ctx": srv.get("ctx"), "parallel": srv.get("parallel"), "variant": srv.get("tag") or "base",
         "policy": cfg.get("policy"), "slot_policy": cfg.get("slot_policy"),
         "k": cfg.get("k"), "rate": cfg.get("rate"), "seed": cfg.get("workload_seed"),
         "server_startup_s": cfg.get("server_startup_s"),
@@ -156,7 +156,7 @@ def load(root: Path) -> pd.DataFrame:
     return pd.DataFrame([summarize_run(d) for d in dirs])
 
 
-GROUP = ["ctx", "parallel", "policy", "slot_policy", "k", "rate"]
+GROUP = ["ctx", "parallel", "variant", "policy", "slot_policy", "k", "rate"]
 
 
 def aggregate(df: pd.DataFrame) -> pd.DataFrame:
@@ -191,7 +191,7 @@ def plot_k_sweep(summary: pd.DataFrame, out: Path) -> list[Path]:
               ("throughput_tasks_s", "Completed tasks per second", "tasks/s"),
               ("fail_rate", "Failed or timed-out tasks", "fraction of tasks"),
               ("idle_hold_frac", "Admitted time spent waiting on tools", "fraction")]
-    for (ctx, par, pol, sp), g in summary.groupby(["ctx", "parallel", "policy", "slot_policy"], dropna=False):
+    for (ctx, par, var, pol, sp), g in summary.groupby(["ctx", "parallel", "variant", "policy", "slot_policy"], dropna=False):
         fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
         rates = sorted(g.rate.unique())
         for ax, (m, title, yl) in zip(axes.flat, panels):
@@ -213,10 +213,10 @@ def plot_k_sweep(summary: pd.DataFrame, out: Path) -> list[Path]:
                 ax.set_ylim(bottom=0)
         axes.flat[0].legend(title="Arrival rate", frameon=False, fontsize=9, title_fontsize=9)
         n = int(g.n_seeds.max())
-        fig.suptitle(f"FIFO, fixed K sweep: -c {ctx}, -np {par} ({pol}, slots={sp}); "
+        fig.suptitle(f"Fixed K sweep: -c {ctx}, -np {par}, {var} ({pol}, slots={sp}); "
                      f"mean ± std over {n} seeds", color=INK, fontsize=12, x=0.01, ha="left")
         fig.tight_layout()
-        p = out / f"k_sweep_c{ctx}_np{par}_{pol}_{sp}.png"
+        p = out / f"k_sweep_c{ctx}_np{par}_{var}_{pol}_{sp}.png"
         fig.savefig(p, dpi=150)
         plt.close(fig)
         paths.append(p)
@@ -236,17 +236,17 @@ def plot_server_grid(summary: pd.DataFrame, out: Path) -> list[Path]:
                          if f"{m}_mean" in g and g[f"{m}_mean"].notna().any()), "peak_rss_mb"),
                    "Peak / allocated memory", "MB")]
         fig, axes = plt.subplots(2, 2, figsize=(10, 7.5))
-        ctxs = sorted(g.ctx.unique())
+        ctxs = sorted(set(zip(g.ctx, g.variant)))
         for ax, (m, title, yl) in zip(axes.flat, panels):
             _style(ax, title, yl)
             ax.set_xlabel("server slots (-np)", color=INK_2)
             if f"{m}_mean" not in g:
                 continue
             for i, ctx in enumerate(ctxs):
-                h = g[g.ctx == ctx].sort_values("parallel")
+                h = g[(g.ctx == ctx[0]) & (g.variant == ctx[1])].sort_values("parallel")
                 c = RAMP[min(i + (len(RAMP) - len(ctxs)), len(RAMP) - 1)] if len(ctxs) <= len(RAMP) else RAMP[-1]
                 ax.errorbar(h.parallel, h[f"{m}_mean"], yerr=h[f"{m}_std"].fillna(0), color=c,
-                            marker="o", markersize=6, linewidth=2, capsize=3, label=f"-c {int(ctx)}")
+                            marker="o", markersize=6, linewidth=2, capsize=3, label=f"-c {int(ctx[0])}" + ("" if ctx[1] == "base" else f", {ctx[1]}"))
             ps = sorted(g.parallel.unique())
             ax.set_xscale("log", base=2)
             ax.set_xticks(ps)
@@ -310,17 +310,17 @@ def main() -> None:
     summ = aggregate(df)
     summ.to_csv(out / "summary.csv", index=False)
     print(f"{len(df)} runs ({(df.status == 'crashed').sum()} crashed) -> {out}/runs.csv, summary.csv")
-    multi_k = summ.groupby(["ctx", "parallel"]).k.nunique().max() > 1
+    multi_k = summ.groupby(["ctx", "parallel", "variant"]).k.nunique().max() > 1
     for p in (plot_k_sweep(summ, out) if multi_k else []) + plot_server_grid(summ, out):
         print("  plot", p)
     # timeline for the most loaded config (largest K, highest rate, first seed) per server config
     done = df[df.status == "done"]
-    for _, g in done.groupby(["ctx", "parallel"]):
+    for _, g in done.groupby(["ctx", "parallel", "variant"]):
         top = g.sort_values(["k", "rate", "seed"], ascending=[False, False, True]).iloc[0]
         p = plot_timeline(Path(top.run), out)
         if p:
             print("  plot", p)
-    cols = ["ctx", "parallel", "k", "rate", "n_seeds", "n_ok_mean", "fail_rate_mean", "lat_p95_mean",
+    cols = ["ctx", "parallel", "variant", "k", "rate", "n_seeds", "n_ok_mean", "fail_rate_mean", "lat_p95_mean",
             "lat_p95_std", "throughput_tasks_s_mean", "idle_hold_frac_mean", "cache_hit_ratio_mean"]
     print(summ[[c for c in cols if c in summ]].round(3).to_string(index=False))
 

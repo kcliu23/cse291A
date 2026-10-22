@@ -28,7 +28,7 @@ from .workload import generate
 
 
 def run_dir(root: Path, srv: dict, policy: str, k: int, rate: float, seed: int, slot_policy: str) -> Path:
-    tag = f"c{srv['ctx']}_np{srv['parallel']}"
+    tag = f"c{srv['ctx']}_np{srv['parallel']}" + (f"_{srv['tag']}" if srv.get("tag") else "")
     pol = policy if slot_policy == "auto" else f"{policy}-{slot_policy}"
     return root / tag / f"{pol}_k{k}" / f"rate{rate}" / f"seed{seed}"
 

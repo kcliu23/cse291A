@@ -1,22 +1,98 @@
 {
-  "_comment": "Memory budget sweep: total KV context (-c) x slots (-np) at fixed K and rate. Shows the trade-off between context per slot and concurrency. K is set equal to the largest -np so admission never limits the server.",
+  "_comment": "Memory budget sweep: total KV context (-c) x slots (-np) x KV-cache type, at fixed K and rate. Entries with a 'tag' get their own run folder. kvq8 halves KV memory (needs flash attention); 'fa' is the f16 control with flash attention on, so kvq8 is compared only to fa. c32768_np8_kvq8 uses about the same KV memory as c16384 f16.",
   "out_root": "runs/slots",
   "workload_config": "configs/workload_mix.json",
   "n_tasks": 40,
   "server": {
     "binary": "~/llama.cpp/build/bin/llama-server",
     "model": "~/models/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
-    "ngl": 99, "port": 8080, "extra": []
+    "ngl": 99,
+    "port": 8080,
+    "extra": []
   },
   "server_grid": [
-    {"ctx": 8192,  "parallel": 1}, {"ctx": 8192,  "parallel": 2}, {"ctx": 8192,  "parallel": 4},
-    {"ctx": 16384, "parallel": 2}, {"ctx": 16384, "parallel": 4}, {"ctx": 16384, "parallel": 8},
-    {"ctx": 24576, "parallel": 4}, {"ctx": 24576, "parallel": 8}
+    {
+      "ctx": 8192,
+      "parallel": 1
+    },
+    {
+      "ctx": 8192,
+      "parallel": 2
+    },
+    {
+      "ctx": 8192,
+      "parallel": 4
+    },
+    {
+      "ctx": 16384,
+      "parallel": 2
+    },
+    {
+      "ctx": 16384,
+      "parallel": 4
+    },
+    {
+      "ctx": 16384,
+      "parallel": 8
+    },
+    {
+      "ctx": 24576,
+      "parallel": 4
+    },
+    {
+      "ctx": 24576,
+      "parallel": 8
+    },
+    {
+      "ctx": 16384,
+      "parallel": 4,
+      "tag": "fa",
+      "extra": [
+        "-fa",
+        "on"
+      ]
+    },
+    {
+      "ctx": 16384,
+      "parallel": 4,
+      "tag": "kvq8",
+      "extra": [
+        "-fa",
+        "on",
+        "-ctk",
+        "q8_0",
+        "-ctv",
+        "q8_0"
+      ]
+    },
+    {
+      "ctx": 32768,
+      "parallel": 8,
+      "tag": "kvq8",
+      "extra": [
+        "-fa",
+        "on",
+        "-ctk",
+        "q8_0",
+        "-ctv",
+        "q8_0"
+      ]
+    }
   ],
-  "policies": ["fifo"],
-  "k": [8],
-  "rates": [0.2],
-  "seeds": [0, 1, 2],
+  "policies": [
+    "fifo"
+  ],
+  "k": [
+    8
+  ],
+  "rates": [
+    0.2
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
   "task_timeout_s": 600,
   "request_timeout_s": 300,
   "warmup": 2
