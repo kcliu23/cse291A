@@ -6,6 +6,7 @@ never come from shorter outputs.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -83,7 +84,7 @@ async def _complete_once(
                 if obj.get("stop"):
                     final = obj
                     break
-    except TimeoutError as e:  # aiohttp raises asyncio.TimeoutError (alias of TimeoutError)
+    except (TimeoutError, asyncio.TimeoutError) as e:  # distinct classes before Python 3.11
         raise CompletionError("timeout", str(e) or "request timed out") from e
     except aiohttp.ClientError as e:
         raise CompletionError("connection", repr(e), before_response=not got_response) from e

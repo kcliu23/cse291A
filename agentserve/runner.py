@@ -113,7 +113,7 @@ class Runner:
         state = {"admitted": False, "slot": None}
         try:
             await asyncio.wait_for(self._task_body(s, task, rec, state), timeout=self.task_timeout_s)
-        except TimeoutError:
+        except (TimeoutError, asyncio.TimeoutError):  # distinct before Python 3.11
             rec["status"] = "timeout"
             rec["error"] = f"task exceeded {self.task_timeout_s}s"
         except CompletionError as e:
@@ -213,7 +213,7 @@ async def _get_json(base_url: str, path: str) -> dict | list | None:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
             async with s.get(base_url + path) as r:
                 return await r.json() if r.status == 200 else None
-    except (aiohttp.ClientError, TimeoutError, ValueError):
+    except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError, ValueError):
         return None
 
 

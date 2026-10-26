@@ -1,0 +1,23 @@
+# Copy to ~/.ssh/config.d/cse291a  (setup steps: tools/aws/README.md)
+# The changing IP lives in ~/.ssh/config.d/cse291a-host, written by up.sh / set_ip.sh.
+Host cse291a
+  # ec2-user on Amazon Linux (the course's Deep Learning AMIs); ubuntu on Ubuntu AMIs
+  User ec2-user
+  IdentityFile ~/.ssh/cse291a.pem
+  IdentitiesOnly yes
+  # The IP changes on every start; pin the host key to a fixed name instead of the IP,
+  # so there is no "host key changed" warning, while a different machine still triggers one.
+  HostKeyAlias cse291a
+  StrictHostKeyChecking accept-new
+  # Detect a dead connection within ~2 min instead of hanging; VS Code reconnects on its own.
+  ServerAliveInterval 30
+  ServerAliveCountMax 4
+  TCPKeepAlive yes
+  # Reuse one connection for ssh, rsync and VS Code: later connects are instant.
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%C
+  ControlPersist 10m
+  # The instance's llama-server (127.0.0.1:8080) appears on the Mac as localhost:18080.
+  # 18080, not 8080, so it never collides with a sweep running on the Mac itself.
+  LocalForward 18080 127.0.0.1:8080
+  ExitOnForwardFailure no

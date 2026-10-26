@@ -49,6 +49,10 @@ Memory on a Mac is unified, so `nvidia-smi` doesn't exist and RSS misses Metal b
 
 For clean numbers: plug in, close other apps, run `caffeinate -i` alongside sweeps, and note the chip, RAM and macOS version in the report.
 
+## Running on AWS
+
+See `tools/aws/README.md`: one command to start and connect (`up.sh`), a shell that reconnects by itself (`cse`), code sync (`push.sh`), results back (`pull.sh` → `runs_aws/`), and an idle auto-stop. Configs use paths relative to the repo (`../llama.cpp`, `../models`), so they run unchanged on the Mac and on the instance.
+
 ## Run order
 
 ```bash

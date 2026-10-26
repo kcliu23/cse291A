@@ -56,7 +56,7 @@ async def _footprint_mb(pid: int) -> float | None:
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=3)
-    except (OSError, TimeoutError):
+    except (OSError, TimeoutError, asyncio.TimeoutError):
         return None
     m = _FOOTPRINT_RE.search(out.decode(errors="replace"))
     if not m:
@@ -102,7 +102,7 @@ class Monitor:
                     f.flush()
                     try:
                         await asyncio.wait_for(stop.wait(), timeout=self.interval_s)
-                    except TimeoutError:
+                    except (TimeoutError, asyncio.TimeoutError):
                         pass
 
     async def _sample(self, s: aiohttp.ClientSession) -> dict:
@@ -119,7 +119,7 @@ class Monitor:
                         rec["metrics"] = parse_prometheus(await r.text())
                     else:
                         self.metrics_ok = False
-            except (aiohttp.ClientError, TimeoutError):
+            except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError):
                 pass
         if self.slots_ok:
             try:
@@ -130,6 +130,6 @@ class Monitor:
                         rec["n_slots"] = len(slots)
                     else:
                         self.slots_ok = False
-            except (aiohttp.ClientError, TimeoutError, ValueError):
+            except (aiohttp.ClientError, TimeoutError, asyncio.TimeoutError, ValueError):
                 pass
         return rec

@@ -1,8 +1,8 @@
 """Start and stop llama-server (or the mock server) for one run.
 
 Server config keys:
-    binary   path to llama-server (ignored when mock is true)
-    model    path to the GGUF file
+    binary   path to llama-server (ignored when mock is true); relative = to the repo root
+    model    path to the GGUF file; relative = to the repo root
     ctx      total context (-c); split evenly across slots
     parallel number of slots (-np)
     ngl      layers offloaded to GPU (-ngl), default 99
@@ -15,6 +15,7 @@ Server config keys:
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -26,13 +27,20 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 
 
+def resolve(path: str) -> str:
+    """Expand ~ and $VARS; a relative path is relative to the repo root, so the same
+    config works on any machine with the layout <root>/{agentserve,llama.cpp,models}."""
+    p = Path(os.path.expandvars(path)).expanduser()
+    return str(p if p.is_absolute() else (REPO / p).resolve())
+
+
 def build_cmd(cfg: dict) -> list[str]:
     port = str(cfg.get("port", 8080))
     if cfg.get("mock"):
         return [sys.executable, str(REPO / "tools" / "mock_server.py"),
                 "--port", port, "--ctx", str(cfg["ctx"]), "--parallel", str(cfg["parallel"]),
                 *map(str, cfg.get("mock_args", []))]
-    return [str(Path(cfg["binary"]).expanduser()), "-m", str(Path(cfg["model"]).expanduser()),
+    return [resolve(cfg["binary"]), "-m", resolve(cfg["model"]),
             "-c", str(cfg["ctx"]), "-np", str(cfg["parallel"]),
             "-ngl", str(cfg.get("ngl", 99)),
             "--host", "127.0.0.1", "--port", port, "--metrics",
