@@ -56,7 +56,6 @@ which writes them to [`paper/numbers.json`](paper/numbers.json).
 | Memory split (`-c` × `-np`, 8-bit KV) | `sweep_slots.json` | 33 | `runs/slots` | Sec. V |
 | 8-bit KV output quality | `tools/kv_quality.py` | 3 servers × 70 prompts | `runs/kvq` | Sec. V |
 | Slot save/restore probe | `tools/slot_probe.py` | 3 sizes | `runs/slot_probe` | Sec. VI |
-| Excluded runs (see below) | – | 22 | `runs/_invalid` | – |
 
 All sweeps use workload seeds 0–2 (development seeds 0–99). Seeds 1000+ are reserved for the Phase 2 evaluation.
 
@@ -86,11 +85,8 @@ All sweeps use workload seeds 0–2 (development seeds 0–99). Seeds 1000+ are 
 - **Failures** by cause: `context_exceeded` (task outgrew its slot) or `timeout` (600 s task limit).
 - **Memory**: allocated model / KV / compute buffers from `server.log`, plus peak footprint (Mac) or `nvidia-smi` (AWS).
 
-### Excluded runs
+### Not included
 
-`runs/_invalid/` keeps 22 runs that measured the wrong server: a leftover `llama-server` from an interrupted sweep held
-port 8080, so later runs' requests went to it. Its [README](runs/_invalid/README.md) explains the detection and the
-fix (`server.py` now refuses a busy port and checks the answering server's slot count). The affected sweeps were rerun.
 The saved KV files of the slot probe (`runs/slot_probe/slots/*.bin`, 715 MB) are not committed; rerun the probe to
 recreate them.
 

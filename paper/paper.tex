@@ -2,9 +2,12 @@
 \usepackage[T1]{fontenc}
 \usepackage{graphicx}
 \usepackage{booktabs}
+\usepackage{amssymb}
 \usepackage{xcolor}
 \usepackage{url}
 \usepackage[hidelinks]{hyperref}
+% Course format: 10pt on 12pt leading, two columns, text block 7in x 9in, numbered pages.
+\usepackage[letterpaper,textwidth=7in,textheight=9in,columnsep=0.25in,centering]{geometry}
 
 
 \begin{document}
@@ -16,51 +19,26 @@
 CSE 291A, Fall 2026 --- Phase 1 report}}
 
 \maketitle
+\thispagestyle{plain}\pagestyle{plain}
 
 \begin{abstract}
-LLM agents call the model repeatedly, pause for tool calls, and return with a longer conversation each time. We study how a single edge LLM server should admit such agents under a fixed memory budget. On llama.cpp with a 3B model, we build a seeded multi-step agent workload and measure a FIFO scheduler with a fixed concurrency limit $K$ on an Apple M2 Mac and replicate it on an AWS L4 GPU slice. The best fixed $K$ equals the server's slot count on both machines. Admitting more agents than slots evicts their cached context between steps: prompt-cache reuse falls from 65\% to 17--19\% and p95 latency rises 2.0--2.4$\times$ on the Mac but only 1.4$\times$ on the GPU, whose prompt processing is about 4$\times$ faster. Retaining evicted context in host memory or halving KV precision recovers most of the loss. Phase~2 will target memory-bounded retention of agent context across tool calls.
+LLM agents call the model repeatedly, pause for tool calls, and return with a longer conversation each time. We study how one edge LLM server should admit such agents under a fixed memory budget. On llama.cpp with a 3B model, we build a seeded multi-step agent workload and measure a FIFO scheduler with a fixed concurrency limit $K$ on an Apple M2 Mac, replicated on an AWS L4 GPU slice. The best $K$ equals the server's slot count on both machines. Admitting more agents than slots evicts their cached context between steps: prompt-cache reuse falls from 65\% to 17--19\%, and p95 latency rises 2.0--2.4$\times$ on the Mac but only 1.4$\times$ on the GPU, which recomputes context 4$\times$ faster. Retaining context recovers most of the loss, motivating Phase~2: memory-bounded retention of agent context across tool calls.
 \end{abstract}
 
 \section{Introduction}
-LLM agents do not issue one request; they run a loop~\cite{yao2023react}. The agent calls the model, the model asks for a tool such as a search or a code run, the agent waits for the result, and then it calls the model again with the whole conversation so far. Each step's prompt is therefore longer than the last, and between steps the agent leaves the model idle.
+LLM agents run a loop~\cite{yao2023react}: call the model, wait for a tool such as a search or a code run, then call the model again with the whole conversation so far. Prompts grow at every step, and between steps the agent leaves the model idle. A server keeps each active conversation in its key--value (KV) cache, whose size is fixed by memory. Admitting few agents leaves the hardware idle during tool waits; admitting many overflows that memory, so returning agents find their context evicted and must recompute it. The dilemma is sharpest on edge servers, where one machine with a few gigabytes serves several agents.
 
-A serving system keeps each active conversation in the model's key--value (KV) cache so that it need not reprocess the history at every step, and the size of that cache is fixed by memory. This creates a dilemma. Admitting few agents leaves the hardware idle while they wait on tools; admitting many overflows the memory that holds their conversations, so returning agents find their context evicted and must recompute it. The tension is sharpest on edge servers, where one machine with a few gigabytes serves several agents and memory cannot be added.
-
-Phase~1 asks: \emph{under a fixed memory budget, how do concurrency, context growth and tool waits affect completed agent work, and what is the dominant bottleneck of a simple FIFO baseline?} We answer it on llama.cpp with a 3B model, on an Apple M2 Mac and on an AWS GPU slice.
-
-This report contributes: (1) a seeded multi-step agent workload and an instrumented harness that records every request, task and memory sample; (2) a tuned FIFO baseline with fixed concurrency $K$ on two hardware platforms; (3) evidence that the bottleneck is context eviction once $K$ exceeds the server's slots, shown both by its mechanism and by a causal test that removes it; and (4) a Phase~2 plan for memory-bounded context retention.
+Phase~1 asks: \emph{under a fixed memory budget, how do concurrency, context growth and tool waits affect completed agent work, and what is the dominant bottleneck of a FIFO baseline?} We contribute (1) a seeded agent workload and an instrumented harness for llama.cpp, (2) a tuned FIFO baseline on two hardware platforms, (3) evidence, from mechanism and a causal test, that the bottleneck is context eviction once $K$ exceeds the server's slots, and (4) a Phase~2 plan (timeline in the appendix).
 
 \section{Background and Related Work}
-\textbf{KV cache and slots.} A transformer server stores the keys and values of every processed token so later tokens need not recompute them. For Llama-3.2-3B this costs 112\,KiB per token in f16. llama.cpp~\cite{llamacpp} divides a fixed KV allocation (\texttt{-c} tokens) evenly among \texttt{-np} \emph{slots}, each serving one request at a time. A slot keeps its last prompt, so a returning conversation whose prefix is still in a slot reuses it (\emph{prompt caching}); otherwise the whole history is processed again. vLLM's PagedAttention~\cite{kwon2023vllm} instead shares one paged pool across requests, and SGLang~\cite{zheng2024sglang} reuses shared prefixes through a radix tree; both target datacenter GPUs.
-
-\textbf{Serving agents.} Agent requests pause for tool calls. InferCept~\cite{abhyankar2024infercept} observes that discarding and recomputing context at each pause wastes 37--40\% of model forwarding time and chooses per request whether to preserve, discard or swap it. Continuum~\cite{li2025continuum} pins an agent's KV cache for a time-to-live during a tool call, set from the reload cost and queueing delay. Both assume a large GPU server. We ask how the same tension appears on a single edge machine with a hard memory budget, where hardware also changes the price of recomputation.
+A transformer server stores the keys and values of processed tokens; for Llama-3.2-3B this costs 112\,KiB per token in f16. llama.cpp~\cite{llamacpp} splits a fixed KV allocation (\texttt{-c} tokens) evenly among \texttt{-np} \emph{slots}, each serving one request. A slot keeps its last prompt, so a returning conversation whose prefix is still there reuses it (\emph{prompt caching}); otherwise its whole history is processed again. vLLM~\cite{kwon2023vllm} instead pages one shared pool, and SGLang~\cite{zheng2024sglang} shares prefixes through a radix tree. For agents, InferCept~\cite{abhyankar2024infercept} chooses per request whether to preserve, discard or swap context during a tool call, and Continuum~\cite{li2025continuum} pins it for a time-to-live. Both target large GPU servers; we study a single edge machine with a hard memory budget.
 
 \section{Experimental Setup}
-\textbf{Platforms.} Table~\ref{tab:setup} lists both machines. Both run the same llama.cpp build (b11803), the same Llama-3.2-3B-Instruct Q4\_K\_M file (SHA-256 checked) and the same configurations. Micro-benchmarks show their different balance: prompt processing runs at 365--427 tokens/s on the Mac and 1,463--1,651 tokens/s on AWS (3.4--4.2$\times$), while single-request generation runs at 37.5 vs.\ 23.3 tokens/s.
+\textbf{Platforms.} The primary platform is an Apple M2 Mac mini (24\,GB unified memory, Metal); the replication runs on an AWS g6f.2xlarge with an NVIDIA L4-6Q (a quarter of an L4, 6\,GiB, CUDA). Both run llama.cpp b11803 with Llama-3.2-3B-Instruct Q4\_K\_M (SHA-256 checked) and 4 slots of 4,096 tokens (\texttt{-c 16384 -np 4}), allocating 4.1\,GB (weights 2.2, KV 1.8, compute 0.2) of a 6\,GB budget. Micro-benchmarks show different balances: prompt processing runs at 365--427 vs.\ 1,463--1,651 tokens/s (3.4--4.2$\times$ faster on AWS), single-request generation at 37.5 vs.\ 23.3 tokens/s.
 
-\begin{table}[t]
-\caption{Platforms (same build, model and server settings on both)}
-\label{tab:setup}
-\centering\footnotesize\setlength{\tabcolsep}{4pt}
-\begin{tabular}{@{}lll@{}}
-\toprule
- & M2 Mac (primary) & AWS (replication) \\
-\midrule
-Accelerator & Apple M2, 24\,GB & NVIDIA L4-6Q, 6\,GiB \\
- & & (1/4 L4, g6f.2xlarge) \\
-Backend & Metal & CUDA \\
-Prompt processing & 365--427 tok/s & 1,463--1,651 tok/s \\
-Generation, 1 request & 37.5 tok/s & 23.3 tok/s \\
-\midrule
-Server & \multicolumn{2}{l}{4 slots of 4,096 tokens (\texttt{-c 16384 -np 4})} \\
-Memory & \multicolumn{2}{l}{4.1\,GB: weights 2.2, KV 1.8, compute 0.2} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textbf{Workload.} A seeded generator produces four task classes sharing a 200-token system prefix: \emph{chat} (30\%, 1 step, 150--400-token context), \emph{RAG} (20\%, 1 step, 2,000--3,000 tokens), \emph{short agents} (30\%, 3 steps, 0.5--2\,s tool calls returning 100--300 tokens) and \emph{long agents} (20\%, 6 steps, 1--4\,s tool calls returning 200--400 tokens). Agent steps resend the full history, so contexts grow 200--600 tokens per step. Tasks arrive as a Poisson process at 0.05, 0.1 or 0.2 tasks/s (light load to about 3$\times$ overload); each run has 30 tasks, each configuration three seeds.
 
-\textbf{Workload.} A seeded generator produces four task classes sharing a 200-token system prefix: \emph{chat} (30\%, 1 step, 150--400-token context), \emph{RAG} (20\%, 1 step, 2,000--3,000 tokens), \emph{short agents} (30\%, 3 steps, 0.5--2\,s tool calls returning 100--300 tokens) and \emph{long agents} (20\%, 6 steps, 1--4\,s tool calls returning 200--400 tokens). Each agent step resends the full history, so contexts grow by 200--600 tokens per step. Tasks arrive as a Poisson process at 0.05, 0.1 or 0.2 tasks/s (light load to about 3$\times$ the single-task service rate); each run has 30 tasks and each configuration three seeds.
-
-\textbf{Baseline and controls.} The scheduler admits tasks first-come-first-served up to a concurrency limit $K$; an admitted task keeps its admission through tool calls. Every step generates exactly its fixed output length, so no policy can win by shortening answers. Each run starts a fresh server after two warm-up requests, and llama.cpp's host-RAM prompt cache is disabled so memory equals the allocation above. We report p95 task latency (arrival to completion), throughput, prompt-cache reuse (prompt tokens served from cache), failures by cause, and memory. Failed tasks are kept; runs disturbed by a leftover server process were detected, excluded and rerun.
+\textbf{Baseline and controls.} FIFO admits tasks up to a limit $K$; a task keeps its admission through tool calls. Every step generates a fixed number of tokens, each run starts a fresh server after two warm-up requests, and llama.cpp's host-RAM prompt cache is off so memory equals the allocation. We report p95 task latency, throughput, prompt-cache reuse, failures by cause and memory. Failed tasks are kept; runs disturbed by a leftover server were excluded and rerun.
 
 \section{Baseline: FIFO with Fixed \texorpdfstring{$K$}{K}}
 \begin{figure}[t]
@@ -70,10 +48,10 @@ Memory & \multicolumn{2}{l}{4.1\,GB: weights 2.2, KV 1.8, compute 0.2} \\
 \label{fig:ksweep}
 \end{figure}
 
-Fig.~\ref{fig:ksweep} shows the result of 90 runs. On both machines latency is lowest when $K$ equals the slot count. Under overload (0.1 and 0.2 tasks/s), $K=4$ cuts p95 latency 2.0--2.4$\times$ relative to $K=1$ on the Mac and 3.4--4.0$\times$ on AWS, where a single request generates slowly; at $K=1$ and 0.2 tasks/s, 6 of 90 AWS tasks exceeded the 600\,s task limit. Raising $K$ beyond the slots makes every metric worse: from $K=4$ to $K=8$ at 0.2 tasks/s, p95 rises from 205 to 410\,s on the Mac and from 149 to 203\,s on AWS. Throughput falls 30\% on the Mac (0.075 to 0.053 tasks/s) and 6\% on AWS (0.090 to 0.084). In almost every configuration 1.7 of 30 tasks fail because a long agent outgrows its 4,096-token slot.
+Fig.~\ref{fig:ksweep} summarizes 90 runs. On both machines latency is lowest when $K$ equals the slot count. Under overload, $K=4$ cuts p95 latency 2.0--2.4$\times$ relative to $K=1$ on the Mac and 3.4--4.0$\times$ on AWS, where single-request generation is slow (6 of 90 AWS tasks at $K=1$, 0.2 tasks/s, exceeded the 600\,s limit). Raising $K$ beyond the slots makes every metric worse: from $K=4$ to $K=8$ at 0.2 tasks/s, p95 rises from 205 to 410\,s on the Mac and from 149 to 203\,s on AWS. Throughput falls 30\% on the Mac (0.075 to 0.053 tasks/s) and 6\% on AWS (0.090 to 0.084). In almost every configuration 1.7 of 30 tasks fail because a long agent outgrows its slot.
 
 \section{The Bottleneck: Context Eviction}
-\textbf{Mechanism.} With $K>4$, more conversations are active than slots exist. A task returning from a tool call usually finds its slot reassigned and its context overwritten, so it reprocesses its whole history. Table~\ref{tab:mech} traces this on both machines: reuse collapses equally, but the cost of rebuilding differs. Each request spends 2.4\,s more on prompt processing on the Mac but 0.6\,s more on AWS, and the long recomputations also slow the generation of requests batched with them (28\% vs.\ 12\%). The cost of exceeding the slot count is roughly the reuse lost, set by the scheduler, times the recomputation cost, set by the hardware.
+\textbf{Mechanism.} With $K>4$, more conversations are active than slots. A task returning from a tool call usually finds its slot reassigned and its context overwritten, so it reprocesses its whole history. Table~\ref{tab:mech} shows reuse collapsing equally on both machines while the rebuild cost differs: each request spends 2.4\,s more on prompt processing on the Mac but 0.6\,s on AWS, and the recomputations slow co-batched generation by 28\% vs.\ 12\%. The penalty is roughly the reuse lost (set by the scheduler) times the recomputation cost (set by the hardware).
 
 \begin{table}[t]
 \caption{Going from $K=4$ to $K=8$ at 0.2 tasks/s (mean of 3 seeds)}
@@ -92,7 +70,7 @@ p95 task latency & 205 $\rightarrow$ 410\,s & 149 $\rightarrow$ 203\,s \\
 \end{tabular}
 \end{table}
 
-\textbf{Causal test.} If eviction is the cause, keeping evicted context should remove the penalty. llama.cpp can park evicted prompts in host RAM (\texttt{--cache-ram}). Fig.~\ref{fig:retention} shows $K=8$ on the Mac: a 1\,GB host cache raises reuse from 24\% to 53\% and cuts p95 from 314 to 199\,s within a 6\,GB budget; an 8\,GB cache restores 70\% reuse and matches the best fixed $K$ (128 vs.\ 127\,s) but needs 11.8\,GB. Disabling prompt caching entirely is worse still (375\,s), confirming that reuse is what $K=8$ loses.
+\textbf{Causal test.} If eviction is the cause, keeping evicted context should remove the penalty. Fig.~\ref{fig:retention} shows $K=8$ on the Mac with llama.cpp's host-RAM prompt cache (\texttt{--cache-ram}): a 1\,GB host cache raises reuse from 24\% to 53\% and cuts p95 from 314 to 199\,s within a 6\,GB budget; an 8\,GB cache restores 70\% reuse and matches the best fixed $K$ (128 vs.\ 127\,s) but needs 11.8\,GB. Disabling prompt caching is worse still (375\,s).
 
 \begin{figure}[t]
 \centering
@@ -101,16 +79,32 @@ p95 task latency & 205 $\rightarrow$ 410\,s & 149 $\rightarrow$ 203\,s \\
 \label{fig:retention}
 \end{figure}
 
-\textbf{Memory split.} At a fixed KV budget, fewer, larger slots trade concurrency for capacity: 2,048-token slots fail 14 of 30 tasks, 3,072-token slots 9.3, and 4,096-token slots 1.7. An 8-bit KV cache (\texttt{-ctk/-ctv q8\_0}) halves KV memory (952 vs.\ 1,792\,MiB) at unchanged speed, so 8 slots of 4,096 tokens fit in the memory of 4. At $K=8$ this gives every admitted agent its own slot: reuse returns to 63\%, throughput rises 42\% (0.053 to 0.075 tasks/s) and p95 falls from 314 to 179\,s with no extra failures. On 70 quality prompts with greedy decoding, the 8-bit cache gave identical outputs to f16 on all 30 long-context retrieval prompts (0.9k--2.8k tokens) and 20 short-answer prompts; 6 of 20 long free-form answers diverged after a median of 56 tokens into equally fluent text. A repeated f16 run was identical, so these differences come from quantization.
+\textbf{Memory split.} At a fixed KV budget, smaller slots fail more tasks (14 of 30 at 2,048 tokens, 9.3 at 3,072, 1.7 at 4,096). An 8-bit KV cache halves KV memory (952 vs.\ 1,792\,MiB) at unchanged speed, so 8 slots of 4,096 tokens fit in the memory of 4; at $K=8$ reuse returns to 63\%, throughput rises 42\% and p95 falls from 314 to 179\,s. Its outputs matched f16 exactly on 30 long-context retrieval and 20 short-answer prompts; 6 of 20 long free-form answers diverged after a median of 56 tokens into equally fluent text (a repeated f16 run was identical).
 
-\textbf{Limitations.} The workload is synthetic: filler text, with tool delays and step counts chosen rather than measured. The slot-eviction mechanism is specific to servers with fixed per-request slots such as llama.cpp; a paged pool~\cite{kwon2023vllm} would degrade differently. p95 over 30 tasks is noisy, so we claim only differences larger than one standard deviation, and overload runs end before a steady state. The memory budget on the Mac's unified memory is enforced by configuration, not hardware.
+\textbf{Limitations.} The workload is synthetic (filler text; tool delays and step counts chosen, not measured). Slot eviction is specific to fixed-slot servers such as llama.cpp; a paged pool~\cite{kwon2023vllm} degrades differently. p95 over 30 tasks is noisy, so we claim only differences above one standard deviation. The Mac's budget is enforced by configuration.
 
 \section{Phase 2 Plan}
-Section~V shows that admitting more agents than slots pays off only if their context survives tool calls, and that the right amount of retention depends on memory and on hardware. Phase~2 will therefore build \emph{memory-bounded context retention}: admit more agents than slots, and when an agent enters a tool call, decide whether to keep its context in its slot, park it in a bounded store outside the GPU (llama-server can save a slot's KV state to a file and restore it), or drop it and recompute later. The decision weighs the cost of recomputing the context, measured per platform from its prompt-processing rate, against the cost of holding memory that waiting agents could use, given the agent's expected tool time. Free slots go first to agents whose context is resident. Total memory, including parked context, stays within the 6\,GB budget. Unlike InferCept~\cite{abhyankar2024infercept} and Continuum~\cite{li2025continuum}, which target paged GPU servers, the policy works within fixed slots on one edge machine, enforces a hard total memory budget, and adapts its decisions to a recomputation cost that differs 4$\times$ between our two platforms.
-
-We will compare against three tuned baselines: FIFO at the best fixed $K=4$; $K=8$ with llama.cpp's built-in 1\,GB host cache (LRU, no knowledge of agents); and 8 slots with an 8-bit KV cache. A fixed time-to-live in the style of Continuum serves as an ablation. Evaluation uses held-out workload seeds (1000+), both platforms, the current mix and a variant with longer tool calls (5--30\,s), and reports p95 latency per task class, throughput, failures, peak memory including parked context, and the policy's save/restore overhead. We expect larger gains on the Mac, where recomputation is slower, and smaller but positive gains on AWS.
+Retention pays off, but a fixed host cache is either too small or exceeds the budget. Phase~2 will build \emph{memory-bounded context retention}: admit more agents than slots and, when an agent enters a tool call, keep its context in the slot, park it on the edge machine's SSD, or drop it, weighing each platform's measured recomputation cost against the memory other agents need. Returning agents get free slots first. A probe shows parking is cheap: saving and restoring a 1,000--3,500-token slot through llama-server takes 0.2--0.5\,s versus 2.6--9.7\,s to recompute it on the Mac, with every token reused. Baselines are FIFO at $K=4$, $K=8$ with a 1\,GB host cache, and 8 slots with 8-bit KV; a Continuum-style time-to-live is an ablation. Evaluation uses held-out seeds on both machines, plus longer tool calls, and reports p95 per task class, throughput, peak memory and save/restore overhead.
 
 \bibliographystyle{IEEEtran}
 \bibliography{refs}
+
+\appendix[Timeline and Milestones]
+\begin{center}\footnotesize
+\begin{tabular}{@{}p{1.55cm}p{6.6cm}@{}}
+\toprule
+Dates & Milestone \\
+\midrule
+Oct 8--21 & Topic and related work; harness, workload generator and mock server; llama.cpp and model pinned on the Mac \checkmark \\
+Oct 22--24 & Micro-benchmarks; pilot; $K$, retention and memory-split sweeps on the Mac (99 runs) \checkmark \\
+Oct 25--27 & AWS setup; $K$ sweep and micro-benchmarks replicated (45 runs); 8-bit KV quality check; slot save/restore probe \checkmark \\
+Nov 4 & Phase~1 code, data and report submitted \\
+Nov 5--14 & Retention policy in the runner (keep / park on SSD / drop; returning-agent priority); time-to-live and always-park ablations; tests on dev seeds \\
+Nov 15--21 & Measure save/restore interference under load; tune the cost model per platform \\
+Nov 22--30 & Evaluation on held-out seeds (1000+), both machines, current mix and long-tool-call mix \\
+Dec 1--10 & Final report and code release \\
+\bottomrule
+\end{tabular}
+\end{center}
 
 \end{document}
