@@ -18,10 +18,13 @@ import argparse
 import asyncio
 import itertools
 import json
+import os
+import shutil
 import time
 import traceback
 from pathlib import Path
 
+from .context import POLICIES as CONTEXT_POLICIES
 from .runner import run_once
 from .server import Server
 from .workload import generate
@@ -56,7 +59,18 @@ def execute(cfg: dict, r: dict, log_f) -> None:
     time.sleep(cfg.get("cooldown_s", 3))  # let the previous server release the port and GPU memory
     t = time.time()
     status, err = "ok", None
-    srv = Server(r["server"], d / "server.log")
+    srv_cfg = dict(r["server"])
+    save_dir = None
+    if r["policy"] in CONTEXT_POLICIES and r["policy"] != "slots":
+        # Parked contexts go to a per-run folder, deleted after the run. By default it is inside
+        # the run folder; AGENTSERVE_SLOT_DIR (or "slot_save_root" in the config) puts it on
+        # another disk, e.g. an AWS instance-store NVMe (tools/aws/mount_nvme.sh).
+        root = os.environ.get("AGENTSERVE_SLOT_DIR") or cfg.get("slot_save_root")
+        save_dir = (Path(root) / str(d).replace("/", "_") if root else d / "slots").resolve()
+        shutil.rmtree(save_dir, ignore_errors=True)
+        save_dir.mkdir(parents=True)
+        srv_cfg["extra"] = [*srv_cfg.get("extra", []), "--slot-save-path", str(save_dir)]
+    srv = Server(srv_cfg, d / "server.log")
     try:
         with srv:
             asyncio.run(run_once(
@@ -66,8 +80,10 @@ def execute(cfg: dict, r: dict, log_f) -> None:
                 slot_policy=r["slot_policy"], cache_prompt=cfg.get("cache_prompt", True),
                 warmup=cfg.get("warmup", 2), server_pid=srv.pid,
                 monitor_interval_s=cfg.get("monitor_interval_s", 0.5),
-                extra_meta={"server_config": r["server"], "server_startup_s": srv.startup_s,
-                            "rate": r["rate"], "workload_seed": r["seed"]}))
+                extra_meta={"server_config": srv_cfg, "server_startup_s": srv.startup_s,
+                            "rate": r["rate"], "workload_seed": r["seed"]},
+                slot_save_dir=str(save_dir) if save_dir else None,
+                min_park_tokens=cfg.get("min_park_tokens", 600)))
     except Exception as e:  # record and continue
         status, err = "crashed", "".join(traceback.format_exception_only(e)).strip()
         died = srv.exit_code_before_stop
@@ -77,6 +93,8 @@ def execute(cfg: dict, r: dict, log_f) -> None:
                      + (" (killed by a signal)" if died < 0 else ""))
         (d / "CRASHED").write_text(traceback.format_exc() + f"\n[sweep] {note}\n")
         print(f"[sweep] CRASHED {d}: {err} [{note}]")
+    if save_dir is not None:
+        shutil.rmtree(save_dir, ignore_errors=True)
     log_f.write(json.dumps({"dir": str(d), "status": status, "error": err,
                             "server_exit_code_before_stop": srv.exit_code_before_stop,
                             "start_unix": t, "elapsed_s": round(time.time() - t, 2)}) + "\n")

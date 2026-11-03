@@ -39,7 +39,7 @@ def build_cmd(cfg: dict) -> list[str]:
     if cfg.get("mock"):
         return [sys.executable, str(REPO / "tools" / "mock_server.py"),
                 "--port", port, "--ctx", str(cfg["ctx"]), "--parallel", str(cfg["parallel"]),
-                *map(str, cfg.get("mock_args", []))]
+                *map(str, cfg.get("mock_args", [])), *map(str, cfg.get("extra", []))]
     return [resolve(cfg["binary"]), "-m", resolve(cfg["model"]),
             "-c", str(cfg["ctx"]), "-np", str(cfg["parallel"]),
             "-ngl", str(cfg.get("ngl", 99)),

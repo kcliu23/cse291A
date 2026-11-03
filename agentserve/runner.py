@@ -4,11 +4,15 @@ Phase 1 baseline: FIFO admission with fixed concurrency K. A task is admitted
 when fewer than K tasks are active, in arrival order, and it holds its
 admission slot for its whole lifetime, including tool waits between steps.
 
+Phase 2 policies (context.py: "slots", "park", "park_cost") keep FIFO admission with K
+but also choose the server slot for every request and park waiting agents' context on disk.
+
 Outputs (in --out):
     run_config.json   all parameters, workload hash, server /props, versions
     requests.jsonl    one line per model request (step)
     tasks.jsonl       one line per task, including failed and timed-out tasks
     system.jsonl      system samples (see monitor.py)
+    context.jsonl     Phase 2 policies only: every save, restore and drop of an agent's context
 
 Usage:
     python -m agentserve.runner --server http://127.0.0.1:8080 \
@@ -28,6 +32,7 @@ from pathlib import Path
 import aiohttp
 
 from .client import CompletionError, complete
+from .context import POLICIES as CONTEXT_POLICIES, SlotManager
 from .monitor import Monitor
 
 
@@ -85,7 +90,9 @@ class SlotAssigner:
 class Runner:
     def __init__(self, base_url: str, workload: dict, admission, out_dir: Path, *,
                  task_timeout_s: float, request_timeout_s: float, slot_policy: str,
-                 n_slots: int | None, cache_prompt: bool, seed: int):
+                 n_slots: int | None, cache_prompt: bool, seed: int,
+                 context_policy: str | None = None, slot_save_dir: str | None = None,
+                 min_park_tokens: int = 600):
         self.base_url = base_url
         self.wl = workload
         self.adm = admission
@@ -96,6 +103,10 @@ class Runner:
         self.slots = SlotAssigner(n_slots) if slot_policy == "pin" and n_slots else None
         self.cache_prompt = cache_prompt
         self.seed = seed
+        self.mgr = (SlotManager(n_slots, context_policy, base_url=base_url, save_dir=slot_save_dir,
+                                run_tag=f"s{seed}_{int(time.time())}", t0_fn=self.rel,
+                                min_park_tokens=min_park_tokens)
+                    if context_policy else None)
         self.req_records: list[dict] = []
         self.task_records: list[dict] = []
         self.t0 = 0.0
@@ -110,7 +121,7 @@ class Runner:
         rec = {"task_id": task["id"], "cls": task["cls"], "n_steps": len(task["steps"]),
                "t_arrival": task["arrival_s"], "t_admit": None, "t_end": None,
                "steps_done": 0, "status": "ok", "error": None, "id_slot_pinned": None}
-        state = {"admitted": False, "slot": None}
+        state = {"admitted": False, "slot": None, "mgr_slot": None}
         try:
             await asyncio.wait_for(self._task_body(s, task, rec, state), timeout=self.task_timeout_s)
         except (TimeoutError, asyncio.TimeoutError):  # distinct before Python 3.11
@@ -124,6 +135,11 @@ class Runner:
                 self.adm.release(task)
             if state["slot"] is not None:
                 self.slots.free(state["slot"])
+            if self.mgr is not None:
+                t = self.mgr.task(task)
+                if state["mgr_slot"] is not None:
+                    self.mgr.release(t, state["mgr_slot"], None, last=True)
+                self.mgr.finish(t)
             rec["t_end"] = self.rel(time.monotonic())
             self.task_records.append(rec)
 
@@ -142,9 +158,16 @@ class Runner:
             req = {"task_id": task["id"], "cls": task["cls"], "step": i,
                    "t_ready": self.rel(t_ready), "prompt_chars": len(prompt),
                    "n_predict": step["n_predict"], "status": "ok", "error": None}
+            id_slot = state["slot"]
+            last = i == len(task["steps"]) - 1
+            if self.mgr is not None:
+                ctx = self.mgr.task(task)
+                id_slot, info = await self.mgr.acquire(ctx, returning=i > 0)
+                state["mgr_slot"] = id_slot
+                req.update(info)
             try:
                 r = await complete(s, self.base_url, prompt, step["n_predict"],
-                                   id_slot=state["slot"], cache_prompt=self.cache_prompt,
+                                   id_slot=id_slot, cache_prompt=self.cache_prompt,
                                    seed=self.seed, timeout_s=self.request_timeout_s)
             except CompletionError as e:
                 req.update(status="failed", error=f"{e.kind}: {e.message}",
@@ -155,6 +178,11 @@ class Runner:
                 req.update(status="cancelled", t_end=self.rel(time.monotonic()))
                 self.req_records.append(req)
                 raise
+            if self.mgr is not None:
+                tm = r.get("timings") or {}
+                n_ctx = (tm.get("prompt_n") or 0) + (tm.get("cache_n") or 0) + (tm.get("predicted_n") or 0)
+                self.mgr.release(ctx, id_slot, n_ctx or None, last=last)
+                state["mgr_slot"] = None
             content = r.pop("content")
             for k in ("t_send", "t_first", "t_end"):
                 r[k] = self.rel(r[k])
@@ -164,6 +192,8 @@ class Runner:
             history = prompt + content
             if step["tool_delay_s"] > 0:
                 await asyncio.sleep(step["tool_delay_s"])
+                if self.mgr is not None:
+                    self.mgr.tool_done(ctx, step["tool_delay_s"])
             history += step["tool_output"]
             t_ready = time.monotonic()
 
@@ -178,6 +208,8 @@ class Runner:
         # "Server disconnected" on back-to-back requests.
         connector = aiohttp.TCPConnector(limit=0, force_close=True)
         async with aiohttp.ClientSession(connector=connector, read_bufsize=2**22) as s:
+            if self.mgr is not None:
+                self.mgr.session = s
             if warmup:
                 await self.warmup(s, warmup)
             self.t0 = time.monotonic()
@@ -197,6 +229,10 @@ class Runner:
         with open(self.out / "tasks.jsonl", "w") as f:
             for r in sorted(self.task_records, key=lambda r: r["task_id"]):
                 f.write(json.dumps(r) + "\n")
+        if self.mgr is not None:
+            with open(self.out / "context.jsonl", "w") as f:
+                for e in self.mgr.events:
+                    f.write(json.dumps(e) + "\n")
 
 
 # ---------------------------------------------------------------- helpers
@@ -218,7 +254,7 @@ async def _get_json(base_url: str, path: str) -> dict | list | None:
 
 
 def make_admission(policy: str, k: int):
-    if policy == "fifo":
+    if policy == "fifo" or policy in CONTEXT_POLICIES:
         return FIFOAdmission(k)
     raise ValueError(f"unknown policy {policy!r}")
 
@@ -227,7 +263,8 @@ async def run_once(*, server: str, workload_path: str, out: str, policy: str = "
                    task_timeout_s: float = 300, request_timeout_s: float = 300,
                    slot_policy: str = "auto", cache_prompt: bool = True, seed: int = 0,
                    warmup: int = 2, server_pid: int | None = None,
-                   monitor_interval_s: float = 0.5, extra_meta: dict | None = None) -> Path:
+                   monitor_interval_s: float = 0.5, extra_meta: dict | None = None,
+                   slot_save_dir: str | None = None, min_park_tokens: int = 600) -> Path:
     out_dir = Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
     wl = json.loads(Path(workload_path).read_text())
@@ -236,12 +273,17 @@ async def run_once(*, server: str, workload_path: str, out: str, policy: str = "
     n_slots = len(slots) if isinstance(slots, list) else (props or {}).get("total_slots")
     if slot_policy == "pin" and not n_slots:
         raise SystemExit("slot_policy=pin needs the slot count from /slots or /props")
+    context_policy = policy if policy in CONTEXT_POLICIES else None
+    if context_policy and not n_slots:
+        raise SystemExit(f"policy {policy} needs the slot count from /slots or /props")
 
     cfg = {
         "policy": policy, "k": k, "server": server, "workload_path": str(workload_path),
         "workload_meta": wl["meta"], "task_timeout_s": task_timeout_s,
         "request_timeout_s": request_timeout_s, "slot_policy": slot_policy,
         "cache_prompt": cache_prompt, "seed": seed, "warmup": warmup, "n_slots": n_slots,
+        "context_policy": context_policy, "slot_save_dir": slot_save_dir,
+        "min_park_tokens": min_park_tokens if context_policy == "park_cost" else None,
         "server_props": props, "python": platform.python_version(), "platform": platform.platform(),
         "agentserve_commit": _git_commit(Path(__file__).resolve().parent),
         "started_unix": time.time(), **(extra_meta or {}),
@@ -250,10 +292,14 @@ async def run_once(*, server: str, workload_path: str, out: str, policy: str = "
 
     runner = Runner(server, wl, make_admission(policy, k), out_dir,
                     task_timeout_s=task_timeout_s, request_timeout_s=request_timeout_s,
-                    slot_policy=slot_policy, n_slots=n_slots, cache_prompt=cache_prompt, seed=seed)
+                    slot_policy=slot_policy, n_slots=n_slots, cache_prompt=cache_prompt, seed=seed,
+                    context_policy=context_policy, slot_save_dir=slot_save_dir,
+                    min_park_tokens=min_park_tokens)
     t = time.monotonic()
     await runner.run(warmup, server_pid, monitor_interval_s)
     cfg["wall_s"] = round(time.monotonic() - t, 3)
+    if runner.mgr is not None:
+        cfg["peak_parked_bytes"] = runner.mgr.peak_parked_bytes
     (out_dir / "run_config.json").write_text(json.dumps(cfg, indent=2))
     (out_dir / "DONE").write_text("")
     n_ok = sum(1 for r in runner.task_records if r["status"] == "ok")
@@ -266,7 +312,10 @@ def main() -> None:
     ap.add_argument("--server", default="http://127.0.0.1:8080")
     ap.add_argument("--workload", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--policy", default="fifo")
+    ap.add_argument("--policy", default="fifo", help="fifo, or a Phase 2 policy: slots, park, park_cost")
+    ap.add_argument("--slot-save-dir", default=None,
+                    help="the server's --slot-save-path (needed by park and park_cost)")
+    ap.add_argument("--min-park-tokens", type=int, default=600)
     ap.add_argument("--k", type=int, default=4, help="max concurrently admitted tasks")
     ap.add_argument("--task-timeout", type=float, default=300)
     ap.add_argument("--request-timeout", type=float, default=300)
@@ -281,7 +330,8 @@ def main() -> None:
                          task_timeout_s=a.task_timeout, request_timeout_s=a.request_timeout,
                          slot_policy=a.slot_policy, cache_prompt=not a.no_cache_prompt,
                          warmup=a.warmup, server_pid=a.server_pid,
-                         monitor_interval_s=a.monitor_interval))
+                         monitor_interval_s=a.monitor_interval, slot_save_dir=a.slot_save_dir,
+                         min_park_tokens=a.min_park_tokens))
 
 
 if __name__ == "__main__":

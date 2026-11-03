@@ -1,7 +1,8 @@
 """Mock llama-server for testing the pipeline without a model or GPU.
 
 Implements the subset of llama-server used by agentserve: /health, /props,
-/slots, /metrics and streaming /completion. It mimics the behaviours that
+/slots, /metrics, streaming /completion, and slot save/restore
+(POST /slots/{id}?action=save|restore with --slot-save-path). It mimics the behaviours that
 matter for the scheduler: a fixed number of slots, per-slot context limit
 (ctx / parallel), prefix caching per slot, queueing when all slots are busy,
 and slower decoding when more slots are active. Numbers it produces are NOT
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import time
 
 from aiohttp import web
@@ -118,6 +120,36 @@ class Mock:
                 slot.last_used = time.monotonic()
                 self.cond.notify_all()
 
+    async def slot_action(self, request: web.Request) -> web.Response:
+        if not self.a.slot_save_path:
+            return web.json_response({"error": {"code": 501, "message": "slot save path not set"}}, status=501)
+        s = self.slots[int(request.match_info["id"])]
+        action = request.query.get("action")
+        name = (await request.json())["filename"]
+        path = os.path.join(self.a.slot_save_path, os.path.basename(name))
+        if s.busy:
+            return web.json_response({"error": {"code": 400, "message": "slot is busy"}}, status=400)
+        s.busy = True
+        try:
+            t0 = time.monotonic()
+            if action == "save":
+                await asyncio.sleep(len(s.cache) * self.a.save_ms_per_token / 1000)
+                with open(path, "w") as f:
+                    json.dump(s.cache, f)
+                return web.json_response({"id_slot": s.id, "filename": name, "n_saved": len(s.cache),
+                                          "timings": {"save_ms": (time.monotonic() - t0) * 1000}})
+            if action == "restore":
+                with open(path) as f:
+                    s.cache = json.load(f)
+                await asyncio.sleep(len(s.cache) * self.a.save_ms_per_token / 1000)
+                return web.json_response({"id_slot": s.id, "filename": name, "n_restored": len(s.cache),
+                                          "timings": {"restore_ms": (time.monotonic() - t0) * 1000}})
+            return web.json_response({"error": {"code": 400, "message": f"bad action {action}"}}, status=400)
+        finally:
+            async with self.cond:
+                s.busy = False
+                self.cond.notify_all()
+
     async def health(self, _):
         return web.json_response({"status": "ok"})
 
@@ -149,11 +181,14 @@ def main() -> None:
     ap.add_argument("--prefill-ms", type=float, default=0.2, help="ms per uncached prompt token")
     ap.add_argument("--decode-ms", type=float, default=15.0, help="ms per generated token, 1 slot busy")
     ap.add_argument("--contention", type=float, default=0.15, help="decode slowdown per extra busy slot")
-    a = ap.parse_args()
+    ap.add_argument("--slot-save-path", default=None)
+    ap.add_argument("--save-ms-per-token", type=float, default=0.02)
+    a, _unknown = ap.parse_known_args()  # ignore llama-server flags such as --cache-ram
     m = Mock(a)
     app = web.Application(client_max_size=2**26)
     app.add_routes([web.post("/completion", m.completion), web.get("/health", m.health),
-                    web.get("/props", m.props), web.get("/slots", m.slots_ep), web.get("/metrics", m.metrics)])
+                    web.get("/props", m.props), web.get("/slots", m.slots_ep), web.get("/metrics", m.metrics),
+                    web.post("/slots/{id}", m.slot_action)])
     web.run_app(app, host="127.0.0.1", port=a.port, print=None)
 
 

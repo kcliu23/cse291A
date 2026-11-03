@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -53,8 +54,11 @@ def main() -> None:
     ap.add_argument("--extra", default="", help="extra server flags, e.g. '-fa on -ctk q8_0 -ctv q8_0'")
     args = ap.parse_args()
 
-    save_dir = (args.out / "slots").resolve()
+    # AGENTSERVE_SLOT_DIR puts the saved states on another disk (same variable as the sweep)
+    root = os.environ.get("AGENTSERVE_SLOT_DIR")
+    save_dir = (Path(root) / "slot_probe" if root else args.out / "slots").resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
+    args.out.mkdir(parents=True, exist_ok=True)
     cfg = {"binary": args.binary, "model": args.model, "ctx": 16384, "parallel": 4, "port": args.port,
            "extra": ["--cache-ram", "0", "--slot-save-path", str(save_dir), *args.extra.split()]}
     rng = random.Random(7)
@@ -81,13 +85,14 @@ def main() -> None:
 
             size = (save_dir / f"ctx{n}.bin").stat().st_size / 2**20
             rows.append({
-                "tokens": cold["prompt_n"],
+                "tokens": cold["prompt_n"], "save_dir": str(save_dir),
                 "recompute_ms": evicted["prompt_ms"], "evicted_reused": evicted["cache_n"],
                 "save_ms": (s.get("timings") or {}).get("save_ms", round(save_wall, 1)),
                 "restore_ms": (r.get("timings") or {}).get("restore_ms", round(restore_wall, 1)),
                 "restored_prompt_ms": back["prompt_ms"], "restored_reused": back["cache_n"],
                 "file_mb": round(size, 1)})
             print(json.dumps(rows[-1]))
+            (save_dir / f"ctx{n}.bin").unlink(missing_ok=True)  # keep the disk free
     (args.out / "probe.json").write_text(json.dumps(rows, indent=1))
     print(f"\n{'tokens':>7} {'recompute':>10} {'save':>7} {'restore':>8} {'after restore':>14} {'reused':>7} {'file':>7}")
     for x in rows:

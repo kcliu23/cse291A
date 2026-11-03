@@ -140,6 +140,18 @@ def summarize_run(d: Path) -> dict:
         if held.loc[common].sum() > 0:
             row["idle_hold_frac"] = float(tool_wait.loc[common].sum() / held.loc[common].sum())
 
+    # Phase 2 policies: what happened to agents' context (context.jsonl) and slot waits
+    ctx = pd.DataFrame(_jsonl(d / "context.jsonl"))
+    if cfg.get("context_policy"):
+        row["peak_parked_mb"] = (cfg.get("peak_parked_bytes") or 0) / 2**20
+        for a in ("save", "restore", "drop"):
+            g = ctx[ctx.action == a] if not ctx.empty else ctx
+            row[f"n_{a}"] = int(len(g))
+            if a != "drop" and len(g) and "ms" in g:
+                row[f"{a}_ms_mean"] = float(g.ms.mean())
+        if not reqs.empty and "slot_wait_ms" in reqs:
+            row["slot_wait_p95_s"] = _pct(pd.to_numeric(reqs.slot_wait_ms, errors="coerce").dropna() / 1000, 95)
+
     if sysd:
         s = pd.json_normalize(sysd)
         for col, name in [("rss_mb", "peak_rss_mb"), ("gpu_mem_mb", "peak_gpu_mem_mb"),
@@ -322,7 +334,7 @@ def main() -> None:
         p = plot_timeline(Path(top.run), out)
         if p:
             print("  plot", p)
-    cols = ["ctx", "parallel", "variant", "slot_policy", "k", "rate", "n_seeds", "n_ok_mean", "fail_rate_mean", "lat_p95_mean",
+    cols = ["ctx", "parallel", "variant", "policy", "slot_policy", "k", "rate", "n_seeds", "n_ok_mean", "fail_rate_mean", "lat_p95_mean",
             "lat_p95_std", "throughput_tasks_s_mean", "idle_hold_frac_mean", "cache_hit_ratio_mean"]
     print(summ[[c for c in cols if c in summ]].round(3).to_string(index=False))
 
