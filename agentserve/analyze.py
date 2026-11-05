@@ -175,6 +175,8 @@ GROUP = ["ctx", "parallel", "variant", "policy", "slot_policy", "k", "rate"]
 
 def aggregate(df: pd.DataFrame) -> pd.DataFrame:
     done = df[df.status == "done"]
+    if done.empty:
+        raise SystemExit("no finished runs yet (every run crashed or is still running); see sweep_log.jsonl")
     num = [c for c in done.columns if c not in GROUP + ["run", "status", "seed"]
            and pd.api.types.is_numeric_dtype(done[c])]
     g = done.groupby(GROUP, dropna=False)[num]
