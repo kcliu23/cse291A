@@ -1,0 +1,51 @@
+{
+  "_comment": "FINAL evaluation, config-only baseline: 8 slots with 8-bit KV (same KV memory as 4 f16 slots), FIFO at K = 8, held-out seeds 1000-1002, mix workload. 3 runs.",
+  "out_root": "runs/final_mix_q8",
+  "workload_config": "configs/workload_mix.json",
+  "server_grid": [
+    {
+      "ctx": 32768,
+      "parallel": 8,
+      "tag": "kvq8",
+      "extra": [
+        "--cache-ram",
+        "0",
+        "-fa",
+        "on",
+        "-ctk",
+        "q8_0",
+        "-ctv",
+        "q8_0"
+      ]
+    }
+  ],
+  "policies": [
+    "fifo"
+  ],
+  "k": [
+    8
+  ],
+  "rates": [
+    0.2
+  ],
+  "n_tasks": 30,
+  "cache_prompt": true,
+  "server": {
+    "binary": "../llama.cpp/build/bin/llama-server",
+    "model": "../models/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    "ngl": 99,
+    "port": 8080,
+    "extra": [
+      "--cache-ram",
+      "0"
+    ]
+  },
+  "seeds": [
+    1000,
+    1001,
+    1002
+  ],
+  "task_timeout_s": 900,
+  "request_timeout_s": 300,
+  "warmup": 2
+}

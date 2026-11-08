@@ -1,0 +1,44 @@
+{
+  "_comment": "FINAL evaluation on held-out seeds 1000-1002 (longtool workload, 0.1 tasks/s). 4 f16 slots: fifo (server picks slots), slots (our slot affinity, no parking), park (affinity + SSD parking) at K = 4, 8, 16. 27 runs. Run sweep_final_longtool_q8.json too (config-only baseline).",
+  "out_root": "runs/final_longtool",
+  "workload_config": "configs/workload_longtool.json",
+  "server_grid": [
+    {
+      "ctx": 16384,
+      "parallel": 4
+    }
+  ],
+  "policies": [
+    "fifo",
+    "slots",
+    "park"
+  ],
+  "k": [
+    4,
+    8,
+    16
+  ],
+  "rates": [
+    0.1
+  ],
+  "n_tasks": 30,
+  "cache_prompt": true,
+  "server": {
+    "binary": "../llama.cpp/build/bin/llama-server",
+    "model": "../models/Llama-3.2-3B-Instruct-Q4_K_M.gguf",
+    "ngl": 99,
+    "port": 8080,
+    "extra": [
+      "--cache-ram",
+      "0"
+    ]
+  },
+  "seeds": [
+    1000,
+    1001,
+    1002
+  ],
+  "task_timeout_s": 900,
+  "request_timeout_s": 300,
+  "warmup": 2
+}
