@@ -24,8 +24,8 @@ plt.rcParams.update({"font.size": 7.5, "axes.titlesize": 7.5, "axes.labelsize": 
                      "axes.spines.top": False, "axes.spines.right": False})
 CELLS = [("mac", "longtool", "M2 Mac, long tool calls"), ("aws", "longtool", "AWS L4, long tool calls"),
          ("mac", "mix", "M2 Mac, short tool calls"), ("aws", "mix", "AWS L4, short tool calls")]
-CONFIGS = [("base fifo K4", "FIFO\nK=4"), ("base slots K4", "Affinity\nK=4"), ("kvq8 fifo K8", "8-bit\nK=8"),
-           ("base fifo K8", "FIFO\nK=8"), ("base park K8", "Park\nK=8")]
+CONFIGS = [("base fifo K4", "FIFO\nK=4"), ("base slots K4", "Affin.\nK=4"), ("kvq8 fifo K8", "8-bit\nK=8"),
+           ("base fifo K8", "FIFO\nK=8"), ("base slots K8", "Affin.\nK=8"), ("base park K8", "Park\nK=8")]
 BASE = "base fifo K4"
 
 
@@ -103,7 +103,7 @@ def main() -> None:
     ap.add_argument("--root", type=Path, default=HERE.parent)
     a = ap.parse_args()
     nums: dict = {"cells": {}}
-    fig, axes = plt.subplots(2, 4, figsize=(7.0, 3.1), sharey="row")
+    fig, axes = plt.subplots(2, 4, figsize=(7.0, 3.2), sharey="row")
     for j, (mach, wl, title) in enumerate(CELLS):
         df = load(a.root, mach, wl)
         p95 = df.pivot_table(index="seed", columns="cfg", values="lat_p95")
@@ -117,6 +117,11 @@ def main() -> None:
         cell["overhead_park"] = overhead(park_runs)
         cell["affinity_fifo_k4"] = affinity(df[df.cfg == BASE].run.tolist())
         cell["affinity_slots_k4"] = affinity(df[df.cfg == "base slots K4"].run.tolist())
+        comp = {}
+        for _, r in df[df.cfg == BASE].iterrows():
+            w = json.loads((Path(r.run) / "workload.json").read_text())
+            comp[int(r.seed)] = sum(t["cls"] == "agent_long" for t in w["tasks"])
+        cell["n_long_agents_by_seed"] = comp
         nums["cells"][f"{mach}_{wl}"] = cell
         for i, (tab, label) in enumerate(((p95, "p95 latency vs. FIFO K=4"), (tput, "throughput vs. FIFO K=4"))):
             ax = axes[i, j]
@@ -125,7 +130,7 @@ def main() -> None:
                 v = rel[cfg]
                 good = (v.mean() < 0) if i == 0 else (v.mean() > 0)
                 color = "#1f5fbf" if cfg == "base park K8" else "0.6"
-                ax.bar(x, v.mean(), color=color, width=0.62, alpha=0.9 if cfg == "base park K8" else 0.7)
+                ax.bar(x, v.mean(), color=color, width=0.66, alpha=0.9 if cfg == "base park K8" else 0.7)
                 for seed, y in v.items():
                     ax.plot(x, y, "o", ms=2.6, mfc="white" if seed == 1000 else "black", mec="black", mew=0.5)
             ax.axhline(0, color="0.3", lw=0.6)

@@ -11,6 +11,10 @@ agent returns. This measures, for contexts of ~1k / 2k / 3.5k tokens:
 
 Parking is worth it when save + restore is much cheaper than recompute.
 
+--cold drops the operating system's file cache before every restore (macOS: purge; Linux:
+drop_caches; both need sudo), so the restore reads from the SSD rather than from RAM. Saves
+always land in the file cache first; --cold measures the worst case for the read side.
+
 Usage (repo root, ~2 min on the M2; uses port 8091):
     python tools/slot_probe.py
 """
@@ -18,6 +22,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
+import subprocess
 import os
 import random
 import sys
@@ -44,6 +50,14 @@ def complete(base: str, prompt: str) -> dict:
     return {"prompt_ms": t.get("prompt_ms"), "prompt_n": t.get("prompt_n"), "cache_n": t.get("cache_n")}
 
 
+def drop_file_cache() -> None:
+    if platform.system() == "Darwin":
+        subprocess.run(["sudo", "-n", "purge"], check=True)
+    else:
+        subprocess.run(["sync"], check=True)
+        subprocess.run(["sudo", "-n", "sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"], check=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--binary", default="../llama.cpp/build/bin/llama-server")
@@ -52,6 +66,7 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8091)
     ap.add_argument("--lengths", default="1000,2000,3500")
     ap.add_argument("--extra", default="", help="extra server flags, e.g. '-fa on -ctk q8_0 -ctv q8_0'")
+    ap.add_argument("--cold", action="store_true", help="drop the OS file cache before each restore (needs sudo)")
     args = ap.parse_args()
 
     # AGENTSERVE_SLOT_DIR puts the saved states on another disk (same variable as the sweep)
@@ -77,6 +92,9 @@ def main() -> None:
             save_wall = (time.monotonic() - t) * 1000
             complete(base, other)                               # slot overwritten
             t = time.monotonic()
+            if args.cold:
+                drop_file_cache()
+                t = time.monotonic()
             r = post(f"{base}/slots/0?action=restore", {"filename": f"ctx{n}.bin"})
             restore_wall = (time.monotonic() - t) * 1000
             back = complete(base, ctx + follow)                 # agent returns after restore
