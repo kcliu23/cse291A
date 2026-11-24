@@ -39,8 +39,11 @@ def run_dir(root: Path, srv: dict, policy: str, k: int, rate: float, seed: int, 
 def plan(cfg: dict) -> list[dict]:
     root = Path(cfg["out_root"])
     runs = []
-    for srv_over, policy, k, rate, seed, slot_policy in itertools.product(
-            cfg["server_grid"], cfg.get("policies", ["fifo"]), cfg["k"], cfg["rates"],
+    # "combos" (optional) lists the (policy, k) pairs to run instead of every policy x every k
+    pairs = ([(c["policy"], c["k"]) for c in cfg["combos"]] if cfg.get("combos")
+             else list(itertools.product(cfg.get("policies", ["fifo"]), cfg["k"])))
+    for srv_over, (policy, k), rate, seed, slot_policy in itertools.product(
+            cfg["server_grid"], pairs, cfg["rates"],
             cfg["seeds"], cfg.get("slot_policies", ["auto"])):
         srv = {**cfg["server"], **srv_over}
         d = run_dir(root, srv, policy, k, rate, seed, slot_policy)
