@@ -24,8 +24,9 @@ Held-out workload seeds 1000–1004, never used for development. 200 runs: 2 mac
 | With short tool calls (0.5–4 s), parking is within ±8% of affinity at `K = 4` on every seed, but 39–65% (Mac) and 9–25% (AWS) better than admitting `K = 8` without parking. | same | `runs*/final_mix` |
 | Short tasks gain most: with long tool calls, chat p95 falls from 110 to 25 s (Mac) and 86 to 14 s (AWS) vs. FIFO `K = 4`. | per-class p95 | `runs*/final_longtool` |
 | Parking is cheap: a save or restore takes a median of 34–80 ms; restore + resume is 10–28× faster than recomputing on the Mac and 5–16× on AWS, also when read from the SSD with the file cache dropped. Saves and restores use ≤ 2.4% of run time; server memory is unchanged (0.6–1.1 GB parked at peak). | Table III | `runs*/slot_probe`, `runs*/slot_probe_cold`, `context.jsonl` of every parking run |
-| llama-server's own slot choice evicts waiting agents even when a free slot exists (79–85 of 225 returning steps lose their context with long tool calls at `K = 4`). Our affinity rule removes all of these and alone lowers p95 by 14–30% on the Mac. | Sec. V-C | `runs*/final_*/…/fifo_k4` vs. `slots_k4` |
-| Negative results: a cost-aware variant (`park_cost`) behaved like plain `park`; restoring early could save at most 0.15 s per task; 8-bit KV with 8 slots plus parking moved latency from long to short tasks without raising throughput. | Sec. V-D | `runs/phase2_longtool`, `runs*/phase2_q8` |
+| llama-server's own slot choice evicts waiting agents even when a free slot exists (79–85 of 225 returning steps lose their context with long tool calls at `K = 4`). Our affinity rule removes all of these and alone lowers p95 by 14–30% on the Mac. | Sec. V-D | `runs*/final_*/…/fifo_k4` vs. `slots_k4` |
+| Parking needs tool time: on seeds 1001, 1002, 1004 with mean tool-call time swept 0–40 s, parking `K = 8` is 8–23% worse than affinity `K = 4` at 0 s, breaks even at 2–5 s, and at 40 s lowers p95 by 32–45% (Mac) / 32–47% (AWS) and raises throughput by 38% / 41%. | Fig. 5, Sec. V-B | `runs/delay`, `runs_aws/delay` |
+| Negative results: a cost-aware variant (`park_cost`) behaved like plain `park`; restoring early could save at most 0.15 s per task; 8-bit KV with 8 slots plus parking moved latency from long to short tasks without raising throughput. | Sec. V-E | `runs/phase2_longtool`, `runs*/phase2_q8` |
 
 Every number in the final report is recomputed from these folders by
 [`paper/make_final_figures.py`](paper/make_final_figures.py), which writes them to
@@ -73,7 +74,7 @@ Policies, selected by the `"policies"` list of a sweep config:
 | `tools/slot_probe.py` | Save/restore vs. recompute probe; `--cold` drops the OS file cache before each restore |
 | `tools/kv_quality.py` | 8-bit vs. f16 KV output-quality check |
 | `tools/aws/` | AWS replica: start/stop, SSH, code sync, bootstrap, idle auto-stop, `mount_nvme.sh` for the local SSD |
-| `paper/` | Final report (`final_report.tex/.pdf`, `make_final_figures.py`, `numbers_final.json`) and Phase 1 report (`paper.tex/.pdf`, `make_figures.py`, `numbers.json`) |
+| `paper/` | Final report (`final_report.tex/.pdf`, `make_final_figures.py`, `numbers_final.json`, `make_delay_figure.py`, `numbers_delay.json`) and Phase 1 report (`paper.tex/.pdf`, `make_figures.py`, `numbers.json`) |
 | `runs/` | All Mac measurements |
 | `runs_aws/` | All AWS measurements, same layout |
 
@@ -86,10 +87,11 @@ Policies, selected by the `"policies"` list of a sweep config:
 | Pipeline test (mock server) | `sweep_mock_phase2.json` | 4 | not committed | – |
 | Smoke test, 4 policies | `sweep_phase2_smoke.json` | 4 | `runs*/phase2_smoke` | – |
 | Development: 4 policies × 2 rates, seeds 0–2 (AWS) | `sweep_phase2_dev.json` | 24 | `runs_aws/phase2_dev` | – |
-| Development: long tool calls, seeds 0–2 | `sweep_phase2_longtool.json` | 18 | `runs*/phase2_longtool` | Sec. V-D |
-| Development: parking + 8-bit KV, 8 slots | `sweep_phase2_q8.json` | 12 | `runs*/phase2_q8` | Sec. V-D |
+| Development: long tool calls, seeds 0–2 | `sweep_phase2_longtool.json` | 18 | `runs*/phase2_longtool` | Sec. V-E |
+| Development: parking + 8-bit KV, 8 slots | `sweep_phase2_q8.json` | 12 | `runs*/phase2_q8` | Sec. V-E |
 | **Final: long tool calls, seeds 1000–1004** | `sweep_final_longtool.json` + `_q8` | 45 + 5 | `runs*/final_longtool`, `runs*/final_longtool_q8` | Fig. 3, Tables II–III |
 | **Final: short tool calls, seeds 1000–1004** | `sweep_final_mix.json` + `_q8` | 45 + 5 | `runs*/final_mix`, `runs*/final_mix_q8` | Fig. 3, Tables II–III |
+| Tool-delay sweep: mean tool time 0, 2, 5, 10, 20, 40 s × FIFO K4 / affinity K4 / park K8, seeds 1001, 1002, 1004 | `sweep_delay{0,2,5,10,20,40}.json` (run all with `tools/run_feedback_sweeps.sh delay`) | 54 | `runs*/delay/d*` | Fig. 5, Sec. V-B |
 | Save/restore probe (file cache / SSD) | `tools/slot_probe.py [--cold]` | 3 sizes | `runs*/slot_probe`, `runs*/slot_probe_cold` | Table III |
 
 Workloads: `workload_mix.json` (Phase 1 mix, tool calls 0.5–4 s) and `workload_longtool.json` (same mix, tool calls
@@ -107,6 +109,7 @@ Workloads: `workload_mix.json` (Phase 1 mix, tool calls 0.5–4 s) and `workload
 | Prompt caching off | `sweep_cache_off.json` | 3 | `runs/cache_off` |
 | Memory split (`-c` × `-np`, 8-bit KV) | `sweep_slots.json` | 33 | `runs/slots` |
 | 8-bit KV output quality | `tools/kv_quality.py` | 3 servers × 70 prompts | `runs/kvq` |
+| GPU replicas of the retention, caching-off, memory-split and 8-bit quality experiments (Phase 1 feedback) | same configs, `tools/run_feedback_sweeps.sh gpu` | 18 + 3 + 33 + 210 prompts | `runs_aws/{cache,cache_off,slots,kvq}` |
 
 ### Files in each run
 
